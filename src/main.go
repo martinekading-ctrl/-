@@ -305,7 +305,7 @@ type appState struct {
 	results           []Token
 	selected          int
 	listPage          int
-	filterMode        int // 0 all, 1 score>=80, 2 verified, 3 waiting data
+	filterMode        int // 0 all, 1 watched, 2 verified, 3 waiting data
 	sortMode          int // 0 score, 1 newest, 2 liquidity
 	searchText        string
 	searchFocused     bool
@@ -315,6 +315,7 @@ type appState struct {
 	lastSuccess       time.Time
 	page              int // 0 radar, 1 paper trading
 	sim               *SimState
+	monitor           *MonitorState
 	selectedPos       int
 	selectedTrade     int
 	resetConfirmUntil time.Time
@@ -333,7 +334,7 @@ type appState struct {
 	lastUpdateCheck   time.Time
 }
 
-var app = &appState{dpi: 96, uiScale: 1.0, selected: -1, selectedPos: -1, selectedTrade: -1, status: "等待多链实时监控", logs: []string{}, dirty: true, autoRefresh: true, sim: NewSimState()}
+var app = &appState{dpi: 96, uiScale: 1.0, selected: -1, selectedPos: -1, selectedTrade: -1, status: "等待多链实时监控", logs: []string{}, dirty: true, autoRefresh: true, sim: NewSimState(), monitor: NewMonitorState()}
 
 const (
 	idNone        = 0
@@ -369,6 +370,8 @@ const (
 	idNextPage    = 30
 	idSimProfile  = 31
 	idUpdate      = 32
+	idWatchToggle = 33
+	idMonitorCSV  = 34
 	idRowBase     = 1000
 	idPosBase     = 2000
 	idTradeBase   = 3000
@@ -479,6 +482,8 @@ func buildLayout() layout {
 	detailH := rightH - gap - logH
 	l.detail = rect(W-pad-rightW, contentTop, rightW, detailH)
 	l.logs = rect(l.detail.Left, l.detail.Bottom+gap, rightW, logH)
+	l.buttons[idWatchToggle] = rect(l.detail.Right-s(126), l.detail.Top+s(8), s(110), s(34))
+	l.buttons[idMonitorCSV] = rect(l.logs.Right-s(126), l.logs.Top+s(8), s(110), s(34))
 	l.table = rect(pad, contentTop, l.detail.Left-pad-gap, contentBottom-contentTop)
 	compactFilters := width(l.table) < s(920)
 	filterBarH := s(42)
@@ -573,7 +578,7 @@ func filteredResultIndices() []int {
 		match := true
 		switch app.filterMode {
 		case 1:
-			match = t.Score >= 70
+			match = app.monitor != nil && app.monitor.IsWatching(t)
 		case 2:
 			match = t.Security == "已验证"
 		case 3:
@@ -1132,8 +1137,8 @@ func drawRadarUI(dc HDC, l layout) {
 	text(dc, "5秒实时监控", rect(sw.Right+s(10), ar.Top, ar.Right-sw.Right-s(18), height(ar)), fnts.small, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	// Cards
 	vals := []string{strconv.Itoa(len(app.results)), verifiedCount(), watchCount(), strconv.Itoa(app.candidatePool)}
-	labels := []string{"当前列表", "安全已验证", "重点观察", "多链候选库"}
-	subs := []string{"最多展示 100 个", "未验证候选最高 64 分", "策略档位可切换", "三链最多保留 240 个"}
+	labels := []string{"当前列表", "安全已验证", "自选关注", "多链候选库"}
+	subs := []string{"每条数据标记来源和时间", "第三方结果仍需人工复核", "持续快照与异常告警", "三链最多保留 240 个"}
 	accents := []uint32{col.blue, col.cyan, col.green, col.yellow}
 	for i, r := range l.cards {
 		roundRect(dc, r, col.panel, col.border, s(9))
@@ -1191,7 +1196,7 @@ func drawRadarUI(dc HDC, l layout) {
 	}
 	text(dc, fmt.Sprintf("显示 %d–%d / 共 %d 条 · 候选库 %d", startNo, endNo, filteredCount, app.candidatePool), rect(l.table.Right-s(390), l.table.Top+s(12), s(370), s(28)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
 	drawButton(dc, idFilterAll, l.buttons[idFilterAll], "全部", true, app.filterMode == 0)
-	drawButton(dc, idFilterWatch, l.buttons[idFilterWatch], "70分+", true, app.filterMode == 1)
+	drawButton(dc, idFilterWatch, l.buttons[idFilterWatch], "已关注", true, app.filterMode == 1)
 	drawButton(dc, idFilterSafe, l.buttons[idFilterSafe], "已验证", true, app.filterMode == 2)
 	drawButton(dc, idFilterWait, l.buttons[idFilterWait], "待数据", true, app.filterMode == 3)
 	drawButton(dc, idSortMode, l.buttons[idSortMode], sortModeText(), true, false)
@@ -1315,6 +1320,11 @@ func drawRows(dc HDC, l layout) {
 
 func drawDetails(dc HDC, r RECT) {
 	text(dc, "候选详情", rect(r.Left+s(16), r.Top+s(10), width(r)-s(32), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	watchLabel := "加入关注"
+	if app.selected >= 0 && app.selected < len(app.results) && app.monitor != nil && app.monitor.IsWatching(app.results[app.selected]) {
+		watchLabel = "取消关注"
+	}
+	drawButton(dc, idWatchToggle, buildLayout().buttons[idWatchToggle], watchLabel, app.selected >= 0 && app.selected < len(app.results), watchLabel == "取消关注")
 	line(dc, r.Left+s(14), r.Top+s(48), r.Right-s(14), r.Top+s(48), col.border)
 	body := rect(r.Left+s(10), r.Top+s(52), width(r)-s(20), height(r)-s(62))
 	withClip(dc, body, func() {
@@ -1406,6 +1416,7 @@ func drawDetails(dc HDC, r RECT) {
 
 func drawLogs(dc HDC, r RECT) {
 	text(dc, "运行日志", rect(r.Left+s(16), r.Top+s(10), width(r)-s(32), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	drawButton(dc, idMonitorCSV, buildLayout().buttons[idMonitorCSV], "监控报告", app.monitor != nil && app.monitor.Count() > 0, false)
 	line(dc, r.Left+s(14), r.Top+s(48), r.Right-s(14), r.Top+s(48), col.border)
 	body := rect(r.Left+s(8), r.Top+s(52), width(r)-s(16), height(r)-s(60))
 	withClip(dc, body, func() {
@@ -1469,7 +1480,8 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		app.candidatePool = len(loadChainCandidates().Candidates)
 		loadSimState()
 		loadPreferences()
-		addLog("V2.6 已启动：Base + BSC + Arbitrum 实时雷达、模拟策略和可选 GitHub Releases 更新")
+		app.monitor = loadMonitorState()
+		addLog("V2.7 已启动：可信关注列表、可追溯快照、异常告警和监控报告")
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
 		return 0
@@ -1682,7 +1694,7 @@ func hitTest(x, y int32) int {
 		}
 	}
 	if app.page == 0 {
-		for _, id := range []int{idScan, idStop, idDemo, idExport, idOpenDEX, idTutorial, idDiagnose, idScaleDown, idScaleUp, idAuto, idSimBuy, idFilterAll, idFilterWatch, idFilterSafe, idFilterWait, idSortMode, idClearSearch, idSearchBox, idPrevPage, idNextPage} {
+		for _, id := range []int{idScan, idStop, idDemo, idExport, idOpenDEX, idTutorial, idDiagnose, idScaleDown, idScaleUp, idAuto, idSimBuy, idFilterAll, idFilterWatch, idFilterSafe, idFilterWait, idSortMode, idClearSearch, idSearchBox, idPrevPage, idNextPage, idWatchToggle, idMonitorCSV} {
 			if contains(l.buttons[id], x, y) {
 				return id
 			}
@@ -1746,6 +1758,10 @@ func handleClick(id int) {
 		}
 	case id == idDiagnose:
 		startDiagnostic()
+	case id == idWatchToggle:
+		toggleSelectedWatch()
+	case id == idMonitorCSV:
+		exportMonitorReport()
 	case id == idFilterAll:
 		app.filterMode = 0
 		app.listPage = 0
@@ -1896,6 +1912,7 @@ func handleClick(id int) {
 func cleanup() {
 	saveSimState()
 	savePreferences()
+	_ = saveMonitorState(app.monitor)
 	closeNetwork()
 	deleteFonts()
 	if app.bb.dc != 0 {
@@ -1953,6 +1970,9 @@ func startScan(manual bool) {
 		for _, p := range app.sim.Positions {
 			held = append(held, simKey(p.Chain, p.Address))
 		}
+	}
+	if app.monitor != nil {
+		held = append(held, app.monitor.WatchedIdentities()...)
 	}
 	go func(scanID uint64, heldAddresses []string) {
 		tokens, logs, stats, err := multiScanMarket(ctx, heldAddresses)
@@ -2047,6 +2067,14 @@ func finishScan() {
 		selectFirstVisible(l)
 		app.status = fmt.Sprintf("多链监控正常 %d/3 · 列表 %d / 候选库 %d", app.activeChains, len(app.results), app.candidatePool)
 		app.statusKind = 1
+		if app.monitor != nil {
+			for _, alert := range app.monitor.Observe(app.results, app.lastScan) {
+				addLog("可信告警：" + alert.Symbol + " · " + alert.Message)
+			}
+			if err := saveMonitorState(app.monitor); err != nil {
+				addLog("可信监控保存失败：" + shortErr(err))
+			}
+		}
 		quotes := tokensToQuotes(app.results, app.lastScan)
 		app.sim.AddSnapshots(quotes, app.lastScan)
 		for _, e := range app.sim.Update(quotes, app.lastScan) {
@@ -2112,7 +2140,7 @@ type httpResult struct {
 func initWinHTTPSession() (HINTERNET, error) {
 	winHTTPOnce.Do(func() {
 		h, _, callErr := pWinHttpOpen.Call(
-			uintptr(unsafe.Pointer(utf16Ptr("MultiChainTokenRadar/2.6"))),
+			uintptr(unsafe.Pointer(utf16Ptr("MultiChainTokenRadar/2.7"))),
 			WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
 			0,
 			0,
@@ -4005,7 +4033,7 @@ func addLog(s string) {
 	if len(app.logs) > 100 {
 		app.logs = app.logs[len(app.logs)-100:]
 	}
-	logPath := filepath.Join(dataDir(), "runtime_v25.log")
+	logPath := filepath.Join(dataDir(), "runtime_v27.log")
 	rotateRuntimeLog(logPath)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
@@ -4023,13 +4051,10 @@ func verifiedCount() string {
 	return strconv.Itoa(n)
 }
 func watchCount() string {
-	n := 0
-	for _, t := range app.results {
-		if t.Score >= 80 {
-			n++
-		}
+	if app.monitor == nil {
+		return "0"
 	}
-	return strconv.Itoa(n)
+	return strconv.Itoa(app.monitor.Count())
 }
 func lastUpdateText() string {
 	if app.lastScan.IsZero() {
@@ -4203,8 +4228,8 @@ func main() {
 	// Per-monitor v2 DPI awareness. -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
-	className := utf16Ptr("MultiChainTokenRadarV26Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.6 · 实时多链雷达与模拟验证")
+	className := utf16Ptr("MultiChainTokenRadarV27Window")
+	title := utf16Ptr("Multi-Chain Token Radar V2.7 · 可信监控与异常告警")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {
