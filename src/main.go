@@ -304,7 +304,9 @@ type appState struct {
 	activeChains      int
 	results           []Token
 	selected          int
-	listPage          int
+	listPage          int // derived page number retained for the page buttons
+	listOffset        int // first visible filtered row; mouse wheel moves this continuously
+	detailScroll      int32
 	filterMode        int // 0 all, 1 watched, 2 verified, 3 waiting data
 	sortMode          int // 0 score, 1 newest, 2 liquidity
 	searchText        string
@@ -322,7 +324,7 @@ type appState struct {
 	logs              []string
 	status            string
 	statusKind        int // 0 neutral, 1 success, 2 warning, 3 error
-	modal             int // 0 none, 1 help, 2 diagnostics
+	modal             int // 0 none, 1 help, 2 diagnostics, 3 expanded token details
 	diagText          string
 	toast             string
 	toastUntil        time.Time
@@ -337,44 +339,51 @@ type appState struct {
 var app = &appState{dpi: 96, uiScale: 1.0, selected: -1, selectedPos: -1, selectedTrade: -1, status: "等待多链实时监控", logs: []string{}, dirty: true, autoRefresh: true, sim: NewSimState(), monitor: NewMonitorState()}
 
 const (
-	idNone        = 0
-	idScan        = 1
-	idStop        = 2
-	idDemo        = 3
-	idExport      = 4
-	idOpenDEX     = 5
-	idTutorial    = 6
-	idDiagnose    = 7
-	idScaleDown   = 8
-	idScaleUp     = 9
-	idAuto        = 10
-	idModalClose  = 11
-	idModalPrev   = 12
-	idModalNext   = 13
-	idPageRadar   = 14
-	idPageSim     = 15
-	idSimBuy      = 16
-	idSimSell     = 17
-	idSimCloseAll = 18
-	idSimAuto     = 19
-	idSimReset    = 20
-	idSimExport   = 21
-	idFilterAll   = 22
-	idFilterWatch = 23
-	idFilterSafe  = 24
-	idFilterWait  = 25
-	idSortMode    = 26
-	idSearchBox   = 27
-	idClearSearch = 28
-	idPrevPage    = 29
-	idNextPage    = 30
-	idSimProfile  = 31
-	idUpdate      = 32
-	idWatchToggle = 33
-	idMonitorCSV  = 34
-	idRowBase     = 1000
-	idPosBase     = 2000
-	idTradeBase   = 3000
+	idNone         = 0
+	idScan         = 1
+	idStop         = 2
+	idDemo         = 3
+	idExport       = 4
+	idOpenDEX      = 5
+	idTutorial     = 6
+	idDiagnose     = 7
+	idScaleDown    = 8
+	idScaleUp      = 9
+	idAuto         = 10
+	idModalClose   = 11
+	idModalPrev    = 12
+	idModalNext    = 13
+	idPageRadar    = 14
+	idPageSim      = 15
+	idSimBuy       = 16
+	idSimSell      = 17
+	idSimCloseAll  = 18
+	idSimAuto      = 19
+	idSimReset     = 20
+	idSimExport    = 21
+	idFilterAll    = 22
+	idFilterWatch  = 23
+	idFilterSafe   = 24
+	idFilterWait   = 25
+	idSortMode     = 26
+	idSearchBox    = 27
+	idClearSearch  = 28
+	idPrevPage     = 29
+	idNextPage     = 30
+	idSimProfile   = 31
+	idUpdate       = 32
+	idWatchToggle  = 33
+	idMonitorCSV   = 34
+	idDetailChart  = 35
+	idDetailChain  = 36
+	idExpandDetail = 37
+	idModalChart   = 38
+	idModalChain   = 39
+	idRowBase      = 1000
+	idPosBase      = 2000
+	idTradeBase    = 3000
+	idChartBase    = 4000
+	idChainBase    = 5000
 )
 
 type layout struct {
@@ -482,7 +491,12 @@ func buildLayout() layout {
 	detailH := rightH - gap - logH
 	l.detail = rect(W-pad-rightW, contentTop, rightW, detailH)
 	l.logs = rect(l.detail.Left, l.detail.Bottom+gap, rightW, logH)
-	l.buttons[idWatchToggle] = rect(l.detail.Right-s(126), l.detail.Top+s(8), s(110), s(34))
+	l.buttons[idExpandDetail] = rect(l.detail.Right-s(92), l.detail.Top+s(8), s(76), s(34))
+	l.buttons[idWatchToggle] = rect(l.buttons[idExpandDetail].Left-s(102), l.detail.Top+s(8), s(94), s(34))
+	linkGap := s(8)
+	linkW := (rightW - s(36) - linkGap) / 2
+	l.buttons[idDetailChart] = rect(l.detail.Left+s(18), l.detail.Top+s(96), linkW, s(34))
+	l.buttons[idDetailChain] = rect(l.buttons[idDetailChart].Right+linkGap, l.detail.Top+s(96), linkW, s(34))
 	l.buttons[idMonitorCSV] = rect(l.logs.Right-s(126), l.logs.Top+s(8), s(110), s(34))
 	l.table = rect(pad, contentTop, l.detail.Left-pad-gap, contentBottom-contentTop)
 	compactFilters := width(l.table) < s(920)
@@ -548,9 +562,15 @@ func buildLayout() layout {
 	l.statusbar = rect(0, H-statusH, W, statusH)
 	mw := min32(s(760), W-s(80))
 	mh := min32(s(560), H-s(80))
+	if app.modal == 3 {
+		mw = min32(s(1050), W-s(80))
+		mh = min32(s(720), H-s(80))
+	}
 	l.modal = rect((W-mw)/2, (H-mh)/2, mw, mh)
 	l.buttons[idModalClose] = rect(l.modal.Right-s(52), l.modal.Top+s(18), s(34), s(34))
 	l.buttons[idModalNext] = rect(l.modal.Right-s(154), l.modal.Bottom-s(64), s(130), s(42))
+	l.buttons[idModalChart] = rect(l.modal.Right-s(330), l.modal.Top+s(20), s(120), s(38))
+	l.buttons[idModalChain] = rect(l.modal.Right-s(200), l.modal.Top+s(20), s(130), s(38))
 	return l
 }
 
@@ -562,7 +582,7 @@ func min32(a, b int32) int32 {
 }
 
 func radarPageSize(l layout) int {
-	rowH := s(48)
+	rowH := radarRowHeight()
 	available := l.pageFooter.Top - (l.tableHeader.Bottom + s(4)) - s(4)
 	n := int(available / rowH)
 	if n < 1 {
@@ -570,6 +590,8 @@ func radarPageSize(l layout) int {
 	}
 	return n
 }
+
+func radarRowHeight() int32 { return s(68) }
 
 func filteredResultIndices() []int {
 	query := strings.ToLower(strings.TrimSpace(app.searchText))
@@ -618,16 +640,17 @@ func filteredResultIndices() []int {
 func clampListPage(l layout) {
 	idxs := filteredResultIndices()
 	pageSize := radarPageSize(l)
-	pages := 1
-	if len(idxs) > 0 {
-		pages = (len(idxs) + pageSize - 1) / pageSize
+	maxOffset := len(idxs) - pageSize
+	if maxOffset < 0 {
+		maxOffset = 0
 	}
-	if app.listPage < 0 {
-		app.listPage = 0
+	if app.listOffset < 0 {
+		app.listOffset = 0
 	}
-	if app.listPage >= pages {
-		app.listPage = pages - 1
+	if app.listOffset > maxOffset {
+		app.listOffset = maxOffset
 	}
+	app.listPage = app.listOffset / pageSize
 }
 
 func visibleResultIndices(l layout) ([]int, int, int) {
@@ -638,7 +661,7 @@ func visibleResultIndices(l layout) ([]int, int, int) {
 	if len(idxs) > 0 {
 		pages = (len(idxs) + pageSize - 1) / pageSize
 	}
-	start := app.listPage * pageSize
+	start := app.listOffset
 	if start > len(idxs) {
 		start = len(idxs)
 	}
@@ -647,6 +670,18 @@ func visibleResultIndices(l layout) ([]int, int, int) {
 		end = len(idxs)
 	}
 	return idxs[start:end], len(idxs), pages
+}
+
+func resetListPosition() {
+	app.listOffset = 0
+	app.listPage = 0
+}
+
+func scrollListRows(l layout, rows int) bool {
+	before := app.listOffset
+	app.listOffset += rows
+	clampListPage(l)
+	return app.listOffset != before
 }
 
 func selectFirstVisible(l layout) {
@@ -864,7 +899,7 @@ func drawCommonHeader(dc HDC, l layout, subtitle string) {
 }
 
 func drawSimUI(dc HDC, l layout) {
-	drawCommonHeader(dc, l, "V2.8 自动策略验证 · 真实成本模拟 · 不连接钱包")
+	drawCommonHeader(dc, l, "V2.9 自动策略验证 · 真实成本模拟 · 不连接钱包")
 	if app.sim == nil {
 		app.sim = NewSimState()
 	}
@@ -1117,7 +1152,7 @@ func drawRadarUI(dc HDC, l layout) {
 	drawButton(dc, idStop, l.buttons[idStop], "停止扫描", app.scanning, false)
 	drawButton(dc, idDemo, l.buttons[idDemo], "演示数据", !app.scanning, false)
 	drawButton(dc, idExport, l.buttons[idExport], "导出 CSV", len(app.results) > 0, false)
-	drawButton(dc, idOpenDEX, l.buttons[idOpenDEX], "打开 DEX", app.selected >= 0 && app.selected < len(app.results), false)
+	drawButton(dc, idOpenDEX, l.buttons[idOpenDEX], "选中走势图", app.selected >= 0 && app.selected < len(app.results), false)
 	drawButton(dc, idDiagnose, l.buttons[idDiagnose], "连接诊断", !app.scanning, false)
 	drawButton(dc, idSimBuy, l.buttons[idSimBuy], "模拟买入", canManualSimBuy(), false)
 	drawButton(dc, idScaleDown, l.buttons[idScaleDown], "A−", app.scaleIndex > 0, false)
@@ -1192,11 +1227,11 @@ func drawRadarUI(dc HDC, l layout) {
 	roundRect(dc, l.detail, col.panel, col.border, s(9))
 	roundRect(dc, l.logs, col.panel, col.border, s(9))
 	text(dc, "候选列表", rect(l.table.Left+s(16), l.table.Top+s(10), s(240), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
-	visible, filteredCount, pages := visibleResultIndices(l)
+	visible, filteredCount, _ := visibleResultIndices(l)
 	startNo := 0
 	endNo := 0
 	if filteredCount > 0 {
-		startNo = app.listPage*radarPageSize(l) + 1
+		startNo = app.listOffset + 1
 		endNo = startNo + len(visible) - 1
 	}
 	text(dc, fmt.Sprintf("显示 %d–%d / 共 %d 条 · 候选库 %d", startNo, endNo, filteredCount, app.candidatePool), rect(l.table.Right-s(390), l.table.Top+s(12), s(370), s(28)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
@@ -1223,7 +1258,7 @@ func drawRadarUI(dc HDC, l layout) {
 	}
 	fillRect(dc, l.tableHeader, col.panel3)
 	headers := []string{"质量分", "代币", "安全", "流动性", "24H成交", "池龄", "24H"}
-	fracs := []float64{0.07, 0.30, 0.15, 0.13, 0.14, 0.10, 0.11}
+	fracs := []float64{0.07, 0.29, 0.14, 0.13, 0.14, 0.11, 0.12}
 	x := l.tableHeader.Left
 	for i, h := range headers {
 		cw := int32(float64(width(l.tableHeader)) * fracs[i])
@@ -1235,10 +1270,11 @@ func drawRadarUI(dc HDC, l layout) {
 	} else {
 		drawRows(dc, l)
 	}
+	drawListScrollbar(dc, l, filteredCount)
 	line(dc, l.pageFooter.Left, l.pageFooter.Top-s(4), l.pageFooter.Right, l.pageFooter.Top-s(4), col.border)
-	text(dc, fmt.Sprintf("第 %d / %d 页 · 鼠标滚轮可翻页", app.listPage+1, pages), rect(l.pageFooter.Left+s(4), l.pageFooter.Top, s(300), height(l.pageFooter)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
-	drawButton(dc, idPrevPage, l.buttons[idPrevPage], "上一页", app.listPage > 0, false)
-	drawButton(dc, idNextPage, l.buttons[idNextPage], "下一页", app.listPage+1 < pages, false)
+	text(dc, fmt.Sprintf("滚动显示 %d–%d / %d · 鼠标滚轮逐行浏览", startNo, endNo, filteredCount), rect(l.pageFooter.Left+s(4), l.pageFooter.Top, s(420), height(l.pageFooter)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	drawButton(dc, idPrevPage, l.buttons[idPrevPage], "向上翻页", app.listOffset > 0, false)
+	drawButton(dc, idNextPage, l.buttons[idNextPage], "向下翻页", app.listOffset+radarPageSize(l) < filteredCount, false)
 	drawDetails(dc, l.detail)
 	drawLogs(dc, l.logs)
 	// status bar
@@ -1275,10 +1311,10 @@ func drawEmpty(dc HDC, panel RECT) {
 }
 
 func drawRows(dc HDC, l layout) {
-	rowH := s(48)
+	rowH := radarRowHeight()
 	y := l.tableHeader.Bottom + s(4)
 	visible, _, _ := visibleResultIndices(l)
-	fracs := []float64{0.07, 0.30, 0.15, 0.13, 0.14, 0.10, 0.11}
+	fracs := []float64{0.07, 0.29, 0.14, 0.13, 0.14, 0.11, 0.12}
 	for row, resultIdx := range visible {
 		if resultIdx < 0 || resultIdx >= len(app.results) {
 			continue
@@ -1316,20 +1352,52 @@ func drawRows(dc HDC, l layout) {
 			if j == 1 {
 				align = DT_LEFT
 			}
-			text(dc, v, rect(x+s(6), rr.Top, cw-s(12), height(rr)), fnts.table, tc, align|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+			text(dc, v, rect(x+s(6), rr.Top, cw-s(12), s(43)), fnts.table, tc, align|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 			x += cw
 		}
+		chartR, chainR := radarRowLinkRects(l, row)
+		text(dc, "合约 "+shortAddr(t.Address), rect(rr.Left+s(12), rr.Top+s(42), width(rr)-s(250), s(22)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		text(dc, "走势 ↗", chartR, fnts.small, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+		text(dc, "合约页 ↗", chainR, fnts.small, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 		y += rowH
 	}
 }
 
+func radarRowLinkRects(l layout, row int) (RECT, RECT) {
+	y := l.tableHeader.Bottom + s(4) + int32(row)*radarRowHeight() + s(42)
+	chainR := rect(l.tableHeader.Right-s(104), y, s(94), s(22))
+	chartR := rect(chainR.Left-s(86), y, s(78), s(22))
+	return chartR, chainR
+}
+
+func drawListScrollbar(dc HDC, l layout, total int) {
+	pageSize := radarPageSize(l)
+	if total <= pageSize || total <= 0 {
+		return
+	}
+	track := rect(l.tableHeader.Right-s(7), l.tableHeader.Bottom+s(6), s(4), l.pageFooter.Top-l.tableHeader.Bottom-s(14))
+	roundRect(dc, track, col.panel3, col.panel3, s(2))
+	thumbH := int32(float64(height(track)) * float64(pageSize) / float64(total))
+	if thumbH < s(36) {
+		thumbH = s(36)
+	}
+	travel := height(track) - thumbH
+	maxOffset := total - pageSize
+	thumbY := track.Top
+	if maxOffset > 0 {
+		thumbY += int32(float64(travel) * float64(app.listOffset) / float64(maxOffset))
+	}
+	roundRect(dc, rect(track.Left, thumbY, width(track), thumbH), col.cyan2, col.cyan2, s(2))
+}
+
 func drawDetails(dc HDC, r RECT) {
-	text(dc, "候选详情", rect(r.Left+s(16), r.Top+s(10), width(r)-s(32), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, "候选详情", rect(r.Left+s(16), r.Top+s(10), s(120), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	watchLabel := "加入关注"
 	if app.selected >= 0 && app.selected < len(app.results) && app.monitor != nil && app.monitor.IsWatching(app.results[app.selected]) {
 		watchLabel = "取消关注"
 	}
 	drawButton(dc, idWatchToggle, buildLayout().buttons[idWatchToggle], watchLabel, app.selected >= 0 && app.selected < len(app.results), watchLabel == "取消关注")
+	drawButton(dc, idExpandDetail, buildLayout().buttons[idExpandDetail], "展开", app.selected >= 0 && app.selected < len(app.results), false)
 	line(dc, r.Left+s(14), r.Top+s(48), r.Right-s(14), r.Top+s(48), col.border)
 	body := rect(r.Left+s(10), r.Top+s(52), width(r)-s(20), height(r)-s(62))
 	withClip(dc, body, func() {
@@ -1343,6 +1411,9 @@ func drawDetails(dc HDC, r RECT) {
 		y := body.Top + s(8)
 		text(dc, fmt.Sprintf("[%s] %s  %s", chainLabel(t.Chain), t.Symbol, t.Name), rect(body.Left+s(8), y, width(body)-s(16), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 		y += s(36)
+		drawButton(dc, idDetailChart, buildLayout().buttons[idDetailChart], "查看走势图 ↗", true, true)
+		drawButton(dc, idDetailChain, buildLayout().buttons[idDetailChain], "区块浏览器 ↗", true, false)
+		y += s(42)
 
 		scoreR := rect(body.Left+s(8), y, s(72), s(54))
 		sc := col.yellow
@@ -1448,13 +1519,18 @@ func drawModal(dc HDC, l layout) {
 	r := l.modal
 	roundRect(dc, r, col.panel2, col.border2, s(12))
 	text(dc, "×", l.buttons[idModalClose], fnts.section, col.muted, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+	if app.modal == 3 {
+		drawExpandedDetails(dc, l)
+		return
+	}
 	if app.modal == 1 {
 		text(dc, "程序说明", rect(r.Left+s(30), r.Top+s(24), width(r)-s(100), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 		body := "怎么使用\n" +
 			"1. 程序默认每 5 秒增量检查 Base、BSC、Arbitrum 新区块；也可以点‘立即扫描’手动刷新。\n" +
-			"2. 在代币雷达选择候选，查看评分和风险证据；有真实价格时可点‘模拟买入’。\n" +
+			"2. 每个候选最右侧都有‘走势图’链接；详情页可打开走势图和区块浏览器。\n" +
 			"3. 切换到‘模拟盘’，查看持仓、净盈亏、止损止盈和交易记录。\n" +
-			"4. 点击‘策略档位’可切换：保守、标准、测试；V2.8 默认自动运行模拟策略。\n\n" +
+			"4. 候选列表用鼠标滚轮逐行下拉；点击右侧‘展开’可滚动查看完整详情。\n" +
+			"5. 点击‘策略档位’可切换：保守、标准、测试；V2.9 默认自动运行模拟策略。\n\n" +
 			"三种策略档位\n" +
 			"保守：80分、5万美元流动性、观察3分钟；标准：70分、2.5万美元、观察2分钟；测试：55分、1万美元、观察1分钟。测试档用于更快验证开仓、止损和止盈，不代表更安全或更赚钱。严重合约风险在任何档位都禁止开仓。\n\n" +
 			"评分与模拟的区别\n" +
@@ -1474,6 +1550,105 @@ func drawModal(dc HDC, l layout) {
 	}
 }
 
+func expandedDetailBody(l layout) RECT {
+	return rect(l.modal.Left+s(30), l.modal.Top+s(84), width(l.modal)-s(60), height(l.modal)-s(108))
+}
+
+func expandedDetailContentHeight(t Token) int32 {
+	return s(430) + int32(len(t.Evidence))*s(48)
+}
+
+func clampDetailScroll(l layout) {
+	if app.detailScroll < 0 {
+		app.detailScroll = 0
+	}
+	if app.selected < 0 || app.selected >= len(app.results) {
+		app.detailScroll = 0
+		return
+	}
+	maxScroll := expandedDetailContentHeight(app.results[app.selected]) - height(expandedDetailBody(l))
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if app.detailScroll > maxScroll {
+		app.detailScroll = maxScroll
+	}
+}
+
+func drawExpandedDetails(dc HDC, l layout) {
+	if app.selected < 0 || app.selected >= len(app.results) {
+		text(dc, "没有选中的代币", rect(l.modal.Left+s(30), l.modal.Top+s(30), width(l.modal)-s(100), s(40)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+		return
+	}
+	t := app.results[app.selected]
+	text(dc, fmt.Sprintf("[%s] %s · 完整详情", chainLabel(t.Chain), t.Symbol), rect(l.modal.Left+s(30), l.modal.Top+s(20), width(l.modal)-s(390), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	drawButton(dc, idModalChart, l.buttons[idModalChart], "走势图 ↗", true, true)
+	drawButton(dc, idModalChain, l.buttons[idModalChain], "区块浏览器 ↗", true, false)
+	line(dc, l.modal.Left+s(24), l.modal.Top+s(70), l.modal.Right-s(24), l.modal.Top+s(70), col.border)
+	body := expandedDetailBody(l)
+	clampDetailScroll(l)
+	y := body.Top - app.detailScroll
+	withClip(dc, body, func() {
+		text(dc, t.Name+"  "+t.Symbol, rect(body.Left, y, width(body)-s(20), s(38)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		y += s(42)
+		chartURL := selectedDEXURL(t)
+		chainURL := explorerTokenURL(t.Chain, t.Address)
+		text(dc, "走势图链接："+chartURL, rect(body.Left, y, width(body)-s(30), s(42)), fnts.small, col.cyan, DT_LEFT|DT_WORDBREAK|DT_NOPREFIX)
+		y += s(46)
+		text(dc, "区块浏览器："+chainURL, rect(body.Left, y, width(body)-s(30), s(42)), fnts.small, col.cyan, DT_LEFT|DT_WORDBREAK|DT_NOPREFIX)
+		y += s(52)
+
+		left := body.Left
+		colGap := s(24)
+		colW := (width(body) - colGap - s(20)) / 2
+		right := left + colW + colGap
+		metrics := [][2]string{
+			{fmt.Sprintf("质量分：%d · %s", t.Score, t.Grade), "安全状态：" + t.Security},
+			{"价格：" + price(t.Price), "流动性：" + money(t.Liquidity)},
+			{"24H成交：" + money(t.Volume24), fmt.Sprintf("24H涨跌：%+.1f%%", t.Change24)},
+			{"池龄：" + ageText(t.AgeHours), fmt.Sprintf("买/卖：%d / %d", t.Buys24, t.Sells24)},
+			{"数据更新：" + dataFreshness(t.UpdatedAt), "数据来源：" + t.Source},
+		}
+		for _, pair := range metrics {
+			text(dc, pair[0], rect(left, y, colW, s(26)), fnts.body, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+			text(dc, pair[1], rect(right, y, colW, s(26)), fnts.body, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+			y += s(30)
+		}
+		y += s(8)
+		text(dc, "代币合约："+t.Address, rect(body.Left, y, width(body)-s(30), s(30)), fnts.small, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		y += s(34)
+		pool := t.PoolAddress
+		if pool == "" {
+			pool = "尚未获得池地址"
+		}
+		text(dc, "交易池："+pool, rect(body.Left, y, width(body)-s(30), s(30)), fnts.small, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		y += s(42)
+		text(dc, fmt.Sprintf("全部证据（%d 条）", len(t.Evidence)), rect(body.Left, y, width(body)-s(30), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+		y += s(36)
+		for _, evidence := range t.Evidence {
+			text(dc, "• "+evidence, rect(body.Left+s(6), y, width(body)-s(42), s(44)), fnts.small, col.muted, DT_LEFT|DT_WORDBREAK|DT_NOPREFIX)
+			y += s(48)
+		}
+	})
+
+	contentH := expandedDetailContentHeight(t)
+	if contentH > height(body) {
+		track := rect(body.Right-s(8), body.Top, s(4), height(body))
+		roundRect(dc, track, col.panel3, col.panel3, s(2))
+		thumbH := int32(float64(height(track)) * float64(height(body)) / float64(contentH))
+		if thumbH < s(44) {
+			thumbH = s(44)
+		}
+		maxScroll := contentH - height(body)
+		thumbY := track.Top
+		if maxScroll > 0 {
+			thumbY += int32(float64(height(track)-thumbH) * float64(app.detailScroll) / float64(maxScroll))
+		}
+		roundRect(dc, rect(track.Left, thumbY, width(track), thumbH), col.cyan2, col.cyan2, s(2))
+	}
+	text(dc, "鼠标滚轮上下查看全部内容", rect(l.modal.Left+s(30), l.modal.Bottom-s(24), width(l.modal)-s(60), s(18)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+}
+
 // ----------------------------- Events and message loop -----------------------------
 
 func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
@@ -1488,7 +1663,7 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		loadSimState()
 		loadPreferences()
 		app.monitor = loadMonitorState()
-		addLog("V2.8 已启动：自动模拟、动态仓位、连续亏损熔断和纸面盈利验证")
+		addLog("V2.9 已启动：逐行滚动、每币走势图/浏览器链接和可展开完整详情")
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
 		return 0
@@ -1598,25 +1773,31 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 					app.searchText += string(r)
 				}
 			}
-			app.listPage = 0
+			resetListPosition()
 			selectFirstVisible(buildLayout())
 			invalidate(false)
 			return 0
 		}
 	case WM_MOUSEWHEEL:
+		delta := int16(uint16((wParam >> 16) & 0xffff))
+		if app.modal == 3 {
+			step := s(64)
+			if delta > 0 {
+				app.detailScroll -= step
+			} else if delta < 0 {
+				app.detailScroll += step
+			}
+			clampDetailScroll(buildLayout())
+			invalidate(false)
+			return 0
+		}
 		if app.modal == 0 && app.page == 0 {
-			delta := int16(uint16((wParam >> 16) & 0xffff))
 			l := buildLayout()
-			_, _, pages := visibleResultIndices(l)
-			changed := false
-			if delta > 0 && app.listPage > 0 {
-				app.listPage--
-				changed = true
+			rows := 3
+			if delta > 0 {
+				rows = -3
 			}
-			if delta < 0 && app.listPage+1 < pages {
-				app.listPage++
-				changed = true
-			}
+			changed := scrollListRows(l, rows)
 			if changed {
 				selectFirstVisible(l)
 			}
@@ -1688,7 +1869,11 @@ func invalidate(erase bool) {
 func hitTest(x, y int32) int {
 	l := buildLayout()
 	if app.modal != 0 {
-		for _, id := range []int{idModalClose, idModalNext} {
+		ids := []int{idModalClose, idModalNext}
+		if app.modal == 3 {
+			ids = []int{idModalClose, idModalChart, idModalChain}
+		}
+		for _, id := range ids {
 			if contains(l.buttons[id], x, y) {
 				return id
 			}
@@ -1701,16 +1886,23 @@ func hitTest(x, y int32) int {
 		}
 	}
 	if app.page == 0 {
-		for _, id := range []int{idScan, idStop, idDemo, idExport, idOpenDEX, idTutorial, idDiagnose, idScaleDown, idScaleUp, idAuto, idSimBuy, idFilterAll, idFilterWatch, idFilterSafe, idFilterWait, idSortMode, idClearSearch, idSearchBox, idPrevPage, idNextPage, idWatchToggle, idMonitorCSV} {
+		for _, id := range []int{idScan, idStop, idDemo, idExport, idOpenDEX, idTutorial, idDiagnose, idScaleDown, idScaleUp, idAuto, idSimBuy, idFilterAll, idFilterWatch, idFilterSafe, idFilterWait, idSortMode, idClearSearch, idSearchBox, idPrevPage, idNextPage, idWatchToggle, idMonitorCSV, idDetailChart, idDetailChain, idExpandDetail} {
 			if contains(l.buttons[id], x, y) {
 				return id
 			}
 		}
 		if len(app.results) > 0 && x >= l.tableHeader.Left && x < l.tableHeader.Right && y >= l.tableHeader.Bottom+s(4) && y < l.pageFooter.Top {
-			rowH := s(48)
+			rowH := radarRowHeight()
 			idx := int((y - (l.tableHeader.Bottom + s(4))) / rowH)
 			visible, _, _ := visibleResultIndices(l)
 			if idx >= 0 && idx < len(visible) {
+				chartR, chainR := radarRowLinkRects(l, idx)
+				if contains(chainR, x, y) {
+					return idChainBase + idx
+				}
+				if contains(chartR, x, y) {
+					return idChartBase + idx
+				}
 				return idRowBase + idx
 			}
 		}
@@ -1754,6 +1946,16 @@ func handleClick(id int) {
 		exportCSV()
 	case id == idOpenDEX:
 		openSelectedDEX()
+	case id == idDetailChart || id == idModalChart:
+		openSelectedDEX()
+	case id == idDetailChain || id == idModalChain:
+		openSelectedExplorer()
+	case id == idExpandDetail:
+		if app.selected >= 0 && app.selected < len(app.results) {
+			app.detailScroll = 0
+			app.modal = 3
+			invalidate(false)
+		}
 	case id == idTutorial:
 		app.modal = 1
 		invalidate(false)
@@ -1771,27 +1973,27 @@ func handleClick(id int) {
 		exportMonitorReport()
 	case id == idFilterAll:
 		app.filterMode = 0
-		app.listPage = 0
+		resetListPosition()
 		selectFirstVisible(buildLayout())
 		invalidate(false)
 	case id == idFilterWatch:
 		app.filterMode = 1
-		app.listPage = 0
+		resetListPosition()
 		selectFirstVisible(buildLayout())
 		invalidate(false)
 	case id == idFilterSafe:
 		app.filterMode = 2
-		app.listPage = 0
+		resetListPosition()
 		selectFirstVisible(buildLayout())
 		invalidate(false)
 	case id == idFilterWait:
 		app.filterMode = 3
-		app.listPage = 0
+		resetListPosition()
 		selectFirstVisible(buildLayout())
 		invalidate(false)
 	case id == idSortMode:
 		app.sortMode = (app.sortMode + 1) % 3
-		app.listPage = 0
+		resetListPosition()
 		selectFirstVisible(buildLayout())
 		invalidate(false)
 	case id == idSearchBox:
@@ -1799,21 +2001,19 @@ func handleClick(id int) {
 		invalidate(false)
 	case id == idClearSearch:
 		app.searchText = ""
-		app.listPage = 0
+		resetListPosition()
 		app.searchFocused = true
 		selectFirstVisible(buildLayout())
 		invalidate(false)
 	case id == idPrevPage:
-		if app.listPage > 0 {
-			app.listPage--
+		l := buildLayout()
+		if scrollListRows(l, -radarPageSize(l)) {
 			selectFirstVisible(buildLayout())
 			invalidate(false)
 		}
 	case id == idNextPage:
 		l := buildLayout()
-		_, _, pages := visibleResultIndices(l)
-		if app.listPage+1 < pages {
-			app.listPage++
+		if scrollListRows(l, radarPageSize(l)) {
 			selectFirstVisible(l)
 			invalidate(false)
 		}
@@ -1892,6 +2092,24 @@ func handleClick(id int) {
 	case id == idModalNext:
 		app.modal = 0
 		invalidate(false)
+	case id >= idChainBase:
+		row := id - idChainBase
+		visible, _, _ := visibleResultIndices(buildLayout())
+		if row >= 0 && row < len(visible) {
+			app.selected = visible[row]
+			app.detailScroll = 0
+			openSelectedExplorer()
+			invalidate(false)
+		}
+	case id >= idChartBase:
+		row := id - idChartBase
+		visible, _, _ := visibleResultIndices(buildLayout())
+		if row >= 0 && row < len(visible) {
+			app.selected = visible[row]
+			app.detailScroll = 0
+			openSelectedDEX()
+			invalidate(false)
+		}
 	case id >= idTradeBase:
 		idx := id - idTradeBase
 		if idx >= 0 && idx < len(app.sim.Trades) {
@@ -1911,6 +2129,7 @@ func handleClick(id int) {
 		visible, _, _ := visibleResultIndices(buildLayout())
 		if row >= 0 && row < len(visible) {
 			app.selected = visible[row]
+			app.detailScroll = 0
 			invalidate(false)
 		}
 	}
@@ -2147,7 +2366,7 @@ type httpResult struct {
 func initWinHTTPSession() (HINTERNET, error) {
 	winHTTPOnce.Do(func() {
 		h, _, callErr := pWinHttpOpen.Call(
-			uintptr(unsafe.Pointer(utf16Ptr("MultiChainTokenRadar/2.8"))),
+			uintptr(unsafe.Pointer(utf16Ptr("MultiChainTokenRadar/2.9"))),
 			WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
 			0,
 			0,
@@ -4044,7 +4263,7 @@ func addLog(s string) {
 	if len(app.logs) > 100 {
 		app.logs = app.logs[len(app.logs)-100:]
 	}
-	logPath := filepath.Join(dataDir(), "runtime_v28.log")
+	logPath := filepath.Join(dataDir(), "runtime_v29.log")
 	rotateRuntimeLog(logPath)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
@@ -4176,7 +4395,7 @@ func loadDemo() {
 		app.results[i].UpdatedAt = now
 	}
 	app.selected = 0
-	app.listPage = 0
+	resetListPosition()
 	app.filterMode = 0
 	app.sortMode = 0
 	app.searchText = ""
@@ -4210,9 +4429,9 @@ func exportCSV() {
 	defer f.Close()
 	_, _ = f.Write([]byte{0xEF, 0xBB, 0xBF})
 	w := csv.NewWriter(f)
-	_ = w.Write([]string{"链", "质量分", "等级", "代币", "名称", "合约", "价格", "流动性", "24H成交", "池龄小时", "24H涨跌", "买入税%", "卖出税%", "税费已确认", "安全", "来源"})
+	_ = w.Write([]string{"链", "质量分", "等级", "代币", "名称", "合约", "走势图链接", "区块浏览器链接", "价格", "流动性", "24H成交", "池龄小时", "24H涨跌", "买入税%", "卖出税%", "税费已确认", "安全", "来源"})
 	for _, t := range app.results {
-		_ = w.Write([]string{chainLabel(t.Chain), strconv.Itoa(t.Score), t.Grade, t.Symbol, t.Name, t.Address, strconv.FormatFloat(t.Price, 'f', 8, 64), strconv.FormatFloat(t.Liquidity, 'f', 2, 64), strconv.FormatFloat(t.Volume24, 'f', 2, 64), strconv.FormatFloat(t.AgeHours, 'f', 1, 64), strconv.FormatFloat(t.Change24, 'f', 2, 64), strconv.FormatFloat(t.BuyTaxPct, 'f', 2, 64), strconv.FormatFloat(t.SellTaxPct, 'f', 2, 64), strconv.FormatBool(t.TaxKnown), t.Security, t.Source})
+		_ = w.Write([]string{chainLabel(t.Chain), strconv.Itoa(t.Score), t.Grade, t.Symbol, t.Name, t.Address, selectedDEXURL(t), explorerTokenURL(t.Chain, t.Address), strconv.FormatFloat(t.Price, 'f', 8, 64), strconv.FormatFloat(t.Liquidity, 'f', 2, 64), strconv.FormatFloat(t.Volume24, 'f', 2, 64), strconv.FormatFloat(t.AgeHours, 'f', 1, 64), strconv.FormatFloat(t.Change24, 'f', 2, 64), strconv.FormatFloat(t.BuyTaxPct, 'f', 2, 64), strconv.FormatFloat(t.SellTaxPct, 'f', 2, 64), strconv.FormatBool(t.TaxKnown), t.Security, t.Source})
 	}
 	w.Flush()
 	app.toast = "CSV 已导出到桌面"
@@ -4224,10 +4443,34 @@ func openSelectedDEX() {
 	if app.selected < 0 || app.selected >= len(app.results) {
 		return
 	}
-	u := app.results[app.selected].DEXURL
+	u := selectedDEXURL(app.results[app.selected])
+	pShellExecuteW.Call(0, uintptr(unsafe.Pointer(utf16Ptr("open"))), uintptr(unsafe.Pointer(utf16Ptr(u))), 0, 0, SW_SHOWNORMAL)
+}
+
+func selectedDEXURL(t Token) string {
+	u := strings.TrimSpace(t.DEXURL)
 	if !strings.HasPrefix(u, "http") {
-		u = dexURLFor(app.results[app.selected].Chain, app.results[app.selected].Address)
+		u = dexURLFor(t.Chain, t.Address)
 	}
+	return u
+}
+
+func explorerTokenURL(chain, address string) string {
+	base := "https://basescan.org/token/"
+	switch normalizeChain(chain) {
+	case "bsc":
+		base = "https://bscscan.com/token/"
+	case "arbitrum":
+		base = "https://arbiscan.io/token/"
+	}
+	return base + strings.TrimSpace(address)
+}
+
+func openSelectedExplorer() {
+	if app.selected < 0 || app.selected >= len(app.results) {
+		return
+	}
+	u := explorerTokenURL(app.results[app.selected].Chain, app.results[app.selected].Address)
 	pShellExecuteW.Call(0, uintptr(unsafe.Pointer(utf16Ptr("open"))), uintptr(unsafe.Pointer(utf16Ptr(u))), 0, 0, SW_SHOWNORMAL)
 }
 
@@ -4239,8 +4482,8 @@ func main() {
 	// Per-monitor v2 DPI awareness. -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
-	className := utf16Ptr("MultiChainTokenRadarV28Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.8 · 自动模拟策略验证")
+	className := utf16Ptr("MultiChainTokenRadarV29Window")
+	title := utf16Ptr("Multi-Chain Token Radar V2.9 · 可滚动详情与代币链接")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {

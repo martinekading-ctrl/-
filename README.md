@@ -1,6 +1,6 @@
-# Multi-Chain Token Radar V2.8
+# Multi-Chain Token Radar V2.9
 
-V2.8 is a Windows x64 research application for Base, BSC, and Arbitrum. Its
+V2.9 is a Windows x64 research application for Base, BSC, and Arbitrum. Its
 current workflow is:
 
 1. discover recently created DEX pools;
@@ -14,7 +14,20 @@ The application does not connect to a wallet, store private keys, sign orders,
 or submit real transactions. A profitable paper result is not a promise of
 future or live-trading profit.
 
-## V2.8 paper strategy
+## V2.9 token links and scrolling
+
+- Every candidate row has a visible **走势图** link that opens the token's
+  specific DexScreener market page.
+- The selected-token panel has separate **查看走势图** and **区块浏览器**
+  actions.
+- **展开** opens a large details view with the complete chart URL, explorer
+  URL, contract address, pool address, metrics, and all evidence.
+- The candidate list scrolls continuously by three rows per mouse-wheel step
+  and displays a proportional scrollbar. Page buttons remain available.
+- The expanded details view also supports mouse-wheel scrolling.
+- Candidate CSV exports now include chart and explorer URLs for every token.
+
+## Paper strategy
 
 Paper automation is enabled by default for new accounts and is enabled once
 when an older local simulation account is migrated. It uses virtual USDC only.
@@ -40,7 +53,7 @@ hours. The existing daily loss limit remains active.
 
 ## Profitability validation
 
-V2.8 counts one fully closed automated position as one validation sample.
+V2.9 counts one fully closed automated position as one validation sample.
 Partial exits from the same position are combined, and manual paper trades are
 excluded. The app displays paper validation as passed only when all of the
 following are true:
