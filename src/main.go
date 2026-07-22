@@ -114,6 +114,7 @@ var (
 	pBeginPaint                    = user32.NewProc("BeginPaint")
 	pEndPaint                      = user32.NewProc("EndPaint")
 	pGetClientRect                 = user32.NewProc("GetClientRect")
+	pScreenToClient                = user32.NewProc("ScreenToClient")
 	pInvalidateRect                = user32.NewProc("InvalidateRect")
 	pPostMessageW                  = user32.NewProc("PostMessageW")
 	pSetTimer                      = user32.NewProc("SetTimer")
@@ -306,6 +307,7 @@ type appState struct {
 	selected          int
 	listPage          int // derived page number retained for the page buttons
 	listOffset        int // first visible filtered row; mouse wheel moves this continuously
+	pageScroll        int32
 	detailScroll      int32
 	filterMode        int // 0 all, 1 watched, 2 verified, 3 waiting data
 	sortMode          int // 0 score, 1 newest, 2 liquidity
@@ -415,10 +417,35 @@ func inset(r RECT, n int32) RECT { return RECT{r.Left + n, r.Top + n, r.Right - 
 func width(r RECT) int32         { return r.Right - r.Left }
 func height(r RECT) int32        { return r.Bottom - r.Top }
 
+func pageScrollRange() int32 { return s(360) }
+
+func clampPageScroll() {
+	if app.pageScroll < 0 {
+		app.pageScroll = 0
+	}
+	if maxScroll := pageScrollRange(); app.pageScroll > maxScroll {
+		app.pageScroll = maxScroll
+	}
+}
+
+func scrollPage(delta int32) bool {
+	before := app.pageScroll
+	app.pageScroll += delta
+	clampPageScroll()
+	return app.pageScroll != before
+}
+
+func shiftRectY(r RECT, delta int32) RECT {
+	r.Top += delta
+	r.Bottom += delta
+	return r
+}
+
 func buildLayout() layout {
 	var cr RECT
 	pGetClientRect.Call(uintptr(app.hwnd), uintptr(unsafe.Pointer(&cr)))
 	W, H := width(cr), height(cr)
+	virtualH := H + pageScrollRange()
 	pad := s(16)
 	headerH := s(78)
 	toolbarH := s(68)
@@ -472,7 +499,7 @@ func buildLayout() layout {
 	}
 	l.banner = rect(pad, cardsTop+cardH+gap, totalW, bannerH)
 	contentTop := l.banner.Bottom + gap
-	contentBottom := H - statusH - gap
+	contentBottom := virtualH - statusH - gap
 	rightW := s(390)
 	if W < s(1250) {
 		rightW = s(330)
@@ -559,6 +586,29 @@ func buildLayout() layout {
 	l.simPosHeader = rect(l.simPositions.Left+s(12), l.simPositions.Top+s(50), width(l.simPositions)-s(24), s(38))
 	l.simTrades = rect(l.table.Left, l.simPositions.Bottom+gap, width(l.table), height(l.table)-posH-gap)
 	l.simTradeHeader = rect(l.simTrades.Left+s(12), l.simTrades.Top+s(50), width(l.simTrades)-s(24), s(38))
+	clampPageScroll()
+	pageDelta := -app.pageScroll
+	l.header = shiftRectY(l.header, pageDelta)
+	l.toolbar = shiftRectY(l.toolbar, pageDelta)
+	l.statusPill = shiftRectY(l.statusPill, pageDelta)
+	for i := range l.cards {
+		l.cards[i] = shiftRectY(l.cards[i], pageDelta)
+	}
+	l.banner = shiftRectY(l.banner, pageDelta)
+	l.table = shiftRectY(l.table, pageDelta)
+	l.filterBar = shiftRectY(l.filterBar, pageDelta)
+	l.searchBox = shiftRectY(l.searchBox, pageDelta)
+	l.pageFooter = shiftRectY(l.pageFooter, pageDelta)
+	l.tableHeader = shiftRectY(l.tableHeader, pageDelta)
+	l.detail = shiftRectY(l.detail, pageDelta)
+	l.logs = shiftRectY(l.logs, pageDelta)
+	l.simPositions = shiftRectY(l.simPositions, pageDelta)
+	l.simPosHeader = shiftRectY(l.simPosHeader, pageDelta)
+	l.simTrades = shiftRectY(l.simTrades, pageDelta)
+	l.simTradeHeader = shiftRectY(l.simTradeHeader, pageDelta)
+	for id, r := range l.buttons {
+		l.buttons[id] = shiftRectY(r, pageDelta)
+	}
 	l.statusbar = rect(0, H-statusH, W, statusH)
 	mw := min32(s(760), W-s(80))
 	mh := min32(s(560), H-s(80))
@@ -876,11 +926,11 @@ func drawUI(dc HDC, l layout) {
 func drawCommonHeader(dc HDC, l layout, subtitle string) {
 	ensureFonts()
 	fillRect(dc, l.client, col.bg)
-	logo := rect(s(18), s(18), s(44), s(44))
+	logo := rect(s(18), l.header.Top+s(18), s(44), s(44))
 	ellipse(dc, logo, col.cyan, col.cyan)
 	text(dc, "B", logo, fnts.button, rgb(3, 35, 38), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-	text(dc, "Multi-Chain Token Radar", rect(s(76), s(10), s(500), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
-	text(dc, subtitle, rect(s(77), s(48), s(560), s(22)), fnts.subtitle, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, "Multi-Chain Token Radar", rect(s(76), l.header.Top+s(10), s(500), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, subtitle, rect(s(77), l.header.Top+s(48), s(560), s(22)), fnts.subtitle, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	drawButton(dc, idPageRadar, l.buttons[idPageRadar], "代币雷达", true, app.page == 0)
 	drawButton(dc, idPageSim, l.buttons[idPageSim], "模拟盘", true, app.page == 1)
 	statusFill := col.panel2
@@ -899,7 +949,7 @@ func drawCommonHeader(dc HDC, l layout, subtitle string) {
 }
 
 func drawSimUI(dc HDC, l layout) {
-	drawCommonHeader(dc, l, "V2.9 自动策略验证 · 真实成本模拟 · 不连接钱包")
+	drawCommonHeader(dc, l, "V2.10 整页下拉浏览 · 自动策略验证 · 不连接钱包")
 	if app.sim == nil {
 		app.sim = NewSimState()
 	}
@@ -968,6 +1018,7 @@ func drawSimUI(dc HDC, l layout) {
 	ellipse(dc, rect(s(8), l.statusbar.Top+s(9), s(8), s(8)), col.green, col.green)
 	text(dc, fmt.Sprintf("模拟盘：不连接钱包、不发送交易 · 最近价格 %s", lastUpdateText()), rect(s(24), l.statusbar.Top, s(920), height(l.statusbar)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 	text(dc, fmt.Sprintf("自动策略：%s（%s档） · 实时监控：%s", onOff(app.sim.AutoEnabled), app.sim.ProfileName(), onOff(app.autoRefresh)), rect(l.statusbar.Right-s(430), l.statusbar.Top, s(415), height(l.statusbar)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
+	drawPageScrollbar(dc, l)
 	if app.toast != "" && time.Now().Before(app.toastUntil) {
 		tr := rect(l.client.Right-s(380), l.client.Bottom-s(88), s(350), s(48))
 		roundRect(dc, tr, col.panel3, col.cyan, s(8))
@@ -1127,11 +1178,11 @@ func drawRadarUI(dc HDC, l layout) {
 	ensureFonts()
 	fillRect(dc, l.client, col.bg)
 	// Header
-	logo := rect(s(18), s(18), s(44), s(44))
+	logo := rect(s(18), l.header.Top+s(18), s(44), s(44))
 	ellipse(dc, logo, col.cyan, col.cyan)
 	text(dc, "B", logo, fnts.button, rgb(3, 35, 38), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-	text(dc, "Multi-Chain Token Radar", rect(s(76), s(10), s(500), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
-	text(dc, "Base + BSC + Arbitrum 新池发现 · 免费监控 · 本地模拟交易", rect(s(77), s(48), s(560), s(22)), fnts.subtitle, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, "Multi-Chain Token Radar", rect(s(76), l.header.Top+s(10), s(500), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, "Base + BSC + Arbitrum 新池发现 · 免费监控 · 本地模拟交易", rect(s(77), l.header.Top+s(48), s(560), s(22)), fnts.subtitle, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	drawButton(dc, idPageRadar, l.buttons[idPageRadar], "代币雷达", true, app.page == 0)
 	drawButton(dc, idPageSim, l.buttons[idPageSim], "模拟盘", true, app.page == 1)
 	statusFill := col.panel2
@@ -1272,7 +1323,7 @@ func drawRadarUI(dc HDC, l layout) {
 	}
 	drawListScrollbar(dc, l, filteredCount)
 	line(dc, l.pageFooter.Left, l.pageFooter.Top-s(4), l.pageFooter.Right, l.pageFooter.Top-s(4), col.border)
-	text(dc, fmt.Sprintf("滚动显示 %d–%d / %d · 鼠标滚轮逐行浏览", startNo, endNo, filteredCount), rect(l.pageFooter.Left+s(4), l.pageFooter.Top, s(420), height(l.pageFooter)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, fmt.Sprintf("显示 %d–%d / %d · 列表内滚动代币，右侧或空白处滚动整页", startNo, endNo, filteredCount), rect(l.pageFooter.Left+s(4), l.pageFooter.Top, s(560), height(l.pageFooter)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	drawButton(dc, idPrevPage, l.buttons[idPrevPage], "向上翻页", app.listOffset > 0, false)
 	drawButton(dc, idNextPage, l.buttons[idNextPage], "向下翻页", app.listOffset+radarPageSize(l) < filteredCount, false)
 	drawDetails(dc, l.detail)
@@ -1289,7 +1340,8 @@ func drawRadarUI(dc HDC, l layout) {
 	}
 	ellipse(dc, rect(s(8), l.statusbar.Top+s(9), s(8), s(8)), sd, sd)
 	text(dc, statusBarText(), rect(s(24), l.statusbar.Top, s(900), height(l.statusbar)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	text(dc, fmt.Sprintf("实时监控：%s · 界面 %d%%", onOff(app.autoRefresh), []int{100, 115, 130, 150}[app.scaleIndex]), rect(l.statusbar.Right-s(330), l.statusbar.Top, s(315), height(l.statusbar)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, fmt.Sprintf("整页可下拉 · 实时监控：%s · 界面 %d%%", onOff(app.autoRefresh), []int{100, 115, 130, 150}[app.scaleIndex]), rect(l.statusbar.Right-s(390), l.statusbar.Top, s(375), height(l.statusbar)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
+	drawPageScrollbar(dc, l)
 	// Toast
 	if app.toast != "" && time.Now().Before(app.toastUntil) {
 		tr := rect(l.client.Right-s(380), l.client.Bottom-s(88), s(350), s(48))
@@ -1390,6 +1442,31 @@ func drawListScrollbar(dc HDC, l layout, total int) {
 	roundRect(dc, rect(track.Left, thumbY, width(track), thumbH), col.cyan2, col.cyan2, s(2))
 }
 
+func drawPageScrollbar(dc HDC, l layout) {
+	if app.modal != 0 || pageScrollRange() <= 0 {
+		return
+	}
+	track := rect(l.client.Right-s(8), s(12), s(4), l.statusbar.Top-s(24))
+	if height(track) <= 0 {
+		return
+	}
+	roundRect(dc, track, rgb(19, 38, 61), rgb(19, 38, 61), s(2))
+	virtualH := height(l.client) + pageScrollRange()
+	thumbH := int32(float64(height(track)) * float64(height(l.client)) / float64(virtualH))
+	if thumbH < s(48) {
+		thumbH = s(48)
+	}
+	if thumbH > height(track) {
+		thumbH = height(track)
+	}
+	travel := height(track) - thumbH
+	thumbY := track.Top
+	if maxScroll := pageScrollRange(); maxScroll > 0 {
+		thumbY += int32(float64(travel) * float64(app.pageScroll) / float64(maxScroll))
+	}
+	roundRect(dc, rect(track.Left, thumbY, width(track), thumbH), col.cyan, col.cyan, s(2))
+}
+
 func drawDetails(dc HDC, r RECT) {
 	text(dc, "候选详情", rect(r.Left+s(16), r.Top+s(10), s(120), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	watchLabel := "加入关注"
@@ -1448,10 +1525,12 @@ func drawDetails(dc HDC, r RECT) {
 		} else {
 			metrics = append(metrics, [2]string{"买卖税：未确认", "自动策略不会开仓"})
 		}
-		if t.PoolAddress != "" {
-			metrics = append(metrics, [2]string{"池地址：" + shortAddr(t.PoolAddress), ""})
-		}
+		footerH := s(48)
+		footerTop := body.Bottom - footerH
 		for _, pair := range metrics {
+			if y+s(21) > footerTop-s(6) {
+				break
+			}
 			text(dc, pair[0], rect(leftX, y, colW, s(21)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 			if pair[1] != "" {
 				text(dc, pair[1], rect(rightX, y, colW, s(21)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
@@ -1460,33 +1539,35 @@ func drawDetails(dc HDC, r RECT) {
 		}
 
 		y += s(4)
-		text(dc, "主要证据", rect(body.Left+s(8), y, width(body)-s(16), s(26)), fnts.body, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
-		y += s(29)
+		if y+s(55) <= footerTop {
+			text(dc, "主要证据", rect(body.Left+s(8), y, width(body)-s(16), s(26)), fnts.body, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+			y += s(29)
+			lineH := s(30)
+			available := footerTop - y - s(4)
+			maxEvidence := 0
+			if available > 0 {
+				maxEvidence = int(available / lineH)
+			}
+			if maxEvidence > 4 {
+				maxEvidence = 4
+			}
+			if maxEvidence > len(t.Evidence) {
+				maxEvidence = len(t.Evidence)
+			}
+			for i := 0; i < maxEvidence; i++ {
+				text(dc, "• "+t.Evidence[i], rect(body.Left+s(10), y, width(body)-s(20), lineH), fnts.small, col.muted, DT_LEFT|DT_WORDBREAK|DT_END_ELLIPSIS)
+				y += lineH
+			}
+			if len(t.Evidence) > maxEvidence && y+s(22) <= footerTop {
+				text(dc, fmt.Sprintf("… 另有 %d 条证据，请点“展开”查看", len(t.Evidence)-maxEvidence), rect(body.Left+s(10), y, width(body)-s(20), s(22)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+			}
+		} else if y+s(22) <= footerTop {
+			text(dc, "完整证据和池地址请点右上角“展开”", rect(body.Left+s(8), y, width(body)-s(16), s(22)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+		}
 
-		contractH := s(28)
-		contractTop := body.Bottom - contractH
-		available := contractTop - y - s(4)
-		lineH := s(30)
-		maxEvidence := 0
-		if available > 0 {
-			maxEvidence = int(available / lineH)
-		}
-		if maxEvidence > 4 {
-			maxEvidence = 4
-		}
-		if maxEvidence > len(t.Evidence) {
-			maxEvidence = len(t.Evidence)
-		}
-		for i := 0; i < maxEvidence; i++ {
-			text(dc, "• "+t.Evidence[i], rect(body.Left+s(10), y, width(body)-s(20), lineH), fnts.small, col.muted, DT_LEFT|DT_WORDBREAK|DT_END_ELLIPSIS)
-			y += lineH
-		}
-		if len(t.Evidence) > maxEvidence && y+s(22) <= contractTop {
-			text(dc, fmt.Sprintf("… 另有 %d 条证据已折叠", len(t.Evidence)-maxEvidence), rect(body.Left+s(10), y, width(body)-s(20), s(22)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
-		}
-
-		fillRect(dc, rect(body.Left, contractTop-s(1), width(body), s(1)), col.border)
-		text(dc, "合约："+shortAddr(t.Address), rect(body.Left+s(8), contractTop, width(body)-s(16), contractH), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		fillRect(dc, rect(body.Left, footerTop-s(1), width(body), s(1)), col.border)
+		text(dc, "合约："+shortAddr(t.Address), rect(body.Left+s(8), footerTop+s(2), width(body)-s(16), s(21)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		text(dc, "完整合约与池地址请点“展开”", rect(body.Left+s(8), footerTop+s(23), width(body)-s(16), s(21)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 	})
 }
 
@@ -1529,8 +1610,8 @@ func drawModal(dc HDC, l layout) {
 			"1. 程序默认每 5 秒增量检查 Base、BSC、Arbitrum 新区块；也可以点‘立即扫描’手动刷新。\n" +
 			"2. 每个候选最右侧都有‘走势图’链接；详情页可打开走势图和区块浏览器。\n" +
 			"3. 切换到‘模拟盘’，查看持仓、净盈亏、止损止盈和交易记录。\n" +
-			"4. 候选列表用鼠标滚轮逐行下拉；点击右侧‘展开’可滚动查看完整详情。\n" +
-			"5. 点击‘策略档位’可切换：保守、标准、测试；V2.9 默认自动运行模拟策略。\n\n" +
+			"4. 在候选列表内滚动可逐行浏览代币；在右侧或空白处滚动可下拉整个页面；点击‘展开’查看完整详情。\n" +
+			"5. 点击‘策略档位’可切换：保守、标准、测试；V2.10 默认自动运行模拟策略。\n\n" +
 			"三种策略档位\n" +
 			"保守：80分、5万美元流动性、观察3分钟；标准：70分、2.5万美元、观察2分钟；测试：55分、1万美元、观察1分钟。测试档用于更快验证开仓、止损和止盈，不代表更安全或更赚钱。严重合约风险在任何档位都禁止开仓。\n\n" +
 			"评分与模拟的区别\n" +
@@ -1663,7 +1744,7 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		loadSimState()
 		loadPreferences()
 		app.monitor = loadMonitorState()
-		addLog("V2.9 已启动：逐行滚动、每币走势图/浏览器链接和可展开完整详情")
+		addLog("V2.10 已启动：整页下拉浏览、详情防重叠、逐行代币滚动和完整链接")
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
 		return 0
@@ -1791,15 +1872,28 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 			invalidate(false)
 			return 0
 		}
-		if app.modal == 0 && app.page == 0 {
+		if app.modal == 0 {
 			l := buildLayout()
-			rows := 3
-			if delta > 0 {
-				rows = -3
+			pt := POINT{
+				X: int32(int16(uint16(lParam & 0xffff))),
+				Y: int32(int16(uint16((lParam >> 16) & 0xffff))),
 			}
-			changed := scrollListRows(l, rows)
-			if changed {
-				selectFirstVisible(l)
+			pScreenToClient.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&pt)))
+			if app.page == 0 && contains(l.table, pt.X, pt.Y) {
+				rows := 3
+				if delta > 0 {
+					rows = -3
+				}
+				changed := scrollListRows(l, rows)
+				if changed {
+					selectFirstVisible(l)
+				}
+			} else {
+				step := s(88)
+				if delta > 0 {
+					step = -step
+				}
+				scrollPage(step)
 			}
 			invalidate(false)
 			return 0
@@ -2042,9 +2136,11 @@ func handleClick(id int) {
 		invalidate(false)
 	case id == idPageRadar:
 		app.page = 0
+		app.pageScroll = 0
 		invalidate(false)
 	case id == idPageSim:
 		app.page = 1
+		app.pageScroll = 0
 		app.selectedPos = -1
 		app.selectedTrade = -1
 		invalidate(false)
@@ -4263,7 +4359,7 @@ func addLog(s string) {
 	if len(app.logs) > 100 {
 		app.logs = app.logs[len(app.logs)-100:]
 	}
-	logPath := filepath.Join(dataDir(), "runtime_v29.log")
+	logPath := filepath.Join(dataDir(), "runtime_v210.log")
 	rotateRuntimeLog(logPath)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
@@ -4483,7 +4579,7 @@ func main() {
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
 	className := utf16Ptr("MultiChainTokenRadarV29Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.9 · 可滚动详情与代币链接")
+	title := utf16Ptr("Multi-Chain Token Radar V2.10 · 整页下拉与清晰详情")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {

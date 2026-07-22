@@ -30,3 +30,23 @@ func TestSelectedDEXURLPrefersSpecificMarketLink(t *testing.T) {
 		t.Fatalf("unexpected token fallback URL: %q", got)
 	}
 }
+
+func TestPageScrollClampsToVirtualPage(t *testing.T) {
+	oldDPI, oldScale, oldScroll := app.dpi, app.uiScale, app.pageScroll
+	defer func() {
+		app.dpi, app.uiScale, app.pageScroll = oldDPI, oldScale, oldScroll
+	}()
+	app.dpi, app.uiScale, app.pageScroll = 96, 1, 0
+
+	if !scrollPage(88) || app.pageScroll != 88 {
+		t.Fatalf("first page scroll = %d, want 88", app.pageScroll)
+	}
+	scrollPage(1000)
+	if app.pageScroll != 360 {
+		t.Fatalf("bottom page scroll = %d, want 360", app.pageScroll)
+	}
+	scrollPage(-1000)
+	if app.pageScroll != 0 {
+		t.Fatalf("top page scroll = %d, want 0", app.pageScroll)
+	}
+}

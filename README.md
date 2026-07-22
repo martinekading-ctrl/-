@@ -1,6 +1,6 @@
-# Multi-Chain Token Radar V2.9
+# Multi-Chain Token Radar V2.10
 
-V2.9 is a Windows x64 research application for Base, BSC, and Arbitrum. Its
+V2.10 is a Windows x64 research application for Base, BSC, and Arbitrum. Its
 current workflow is:
 
 1. discover recently created DEX pools;
@@ -14,7 +14,15 @@ The application does not connect to a wallet, store private keys, sign orders,
 or submit real transactions. A profitable paper result is not a promise of
 future or live-trading profit.
 
-## V2.9 token links and scrolling
+## V2.10 full-page scrolling and readable details
+
+- The radar and paper-trading pages are taller than the window and support
+  mouse-wheel vertical scrolling. The bottom status bar remains visible.
+- Scrolling over the candidate table moves through tokens; scrolling over the
+  selected-token panel or unused space moves the entire page.
+- The compact selected-token panel reserves a separate footer for the contract
+  address, so evidence, pool data, and contract text cannot overlap.
+- A page scrollbar on the right shows the current vertical position.
 
 - Every candidate row has a visible **走势图** link that opens the token's
   specific DexScreener market page.
@@ -53,7 +61,7 @@ hours. The existing daily loss limit remains active.
 
 ## Profitability validation
 
-V2.9 counts one fully closed automated position as one validation sample.
+V2.10 counts one fully closed automated position as one validation sample.
 Partial exits from the same position are combined, and manual paper trades are
 excluded. The app displays paper validation as passed only when all of the
 following are true:
