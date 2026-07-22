@@ -149,3 +149,97 @@ func TestSameAddressOnDifferentChainsCanCoexist(t *testing.T) {
 		t.Fatalf("expected two cross-chain positions, got %d", len(s.Positions))
 	}
 }
+
+func TestValidationGroupsPartialExitsByCompletePosition(t *testing.T) {
+	s := NewSimState()
+	s.Config.MinValidationTrades = 2
+	s.MaxDrawdown = 5
+	now := time.Now()
+	s.Trades = []SimTrade{
+		{PositionID: 10, PnL: 0.30, CostAllocated: 2.5, ClosedAt: now.Add(-3 * time.Minute), Automated: true},
+		{PositionID: 10, PnL: 0.20, CostAllocated: 2.5, ClosedAt: now.Add(-2 * time.Minute), Automated: true},
+		{PositionID: 11, PnL: -0.25, CostAllocated: 5, ClosedAt: now.Add(-time.Minute), Automated: true},
+		{PositionID: 12, PnL: 99, CostAllocated: 5, ClosedAt: now, Automated: false},
+	}
+	v := s.Validation()
+	if v.ClosedPositions != 2 || v.Wins != 1 || v.Losses != 1 {
+		t.Fatalf("partial exits must be one complete outcome: %+v", v)
+	}
+	if !v.Passed || v.NetPnL <= 0 || v.ProfitFactor < s.Config.MinProfitFactor {
+		t.Fatalf("expected validation pass after costs and drawdown gates: %+v", v)
+	}
+}
+
+func TestValidationExcludesStillOpenAutomatedPosition(t *testing.T) {
+	s := NewSimState()
+	s.Positions = []SimPosition{{ID: 10, Automated: true, Quantity: 1}}
+	s.Trades = []SimTrade{{PositionID: 10, PnL: 0.3, ClosedAt: time.Now(), Automated: true}}
+	if v := s.Validation(); v.ClosedPositions != 0 {
+		t.Fatalf("open partial position must not count as completed: %+v", v)
+	}
+}
+
+func TestConsecutiveLossesTriggerPaperCircuitBreaker(t *testing.T) {
+	s := NewSimState()
+	s.Config.DailyLossLimit = 10
+	now := time.Now()
+	for i := int64(1); i <= 3; i++ {
+		s.Trades = append(s.Trades, SimTrade{PositionID: i, PnL: -0.2, ClosedAt: now.Add(time.Duration(i-3) * time.Minute), Automated: true})
+	}
+	events := s.AutoEvaluate([]SimQuote{testQuote(1)}, now)
+	if len(events) == 0 || len(s.Positions) != 0 {
+		t.Fatalf("loss streak should pause new entries: events=%v", events)
+	}
+}
+
+func TestV28MigrationEnablesOnlyPaperAutomation(t *testing.T) {
+	s := &SimState{Version: 1, Config: DefaultSimConfig(), Cash: 100}
+	s.Config.MaxHoldingHours = 24
+	s.Config.LiquidityDropPct = 30
+	s.Normalize()
+	if s.Version != 2 || !s.AutoEnabled {
+		t.Fatalf("expected V2.8 paper migration: version=%d auto=%v", s.Version, s.AutoEnabled)
+	}
+	if s.Config.MaxHoldingHours != 6 || s.Config.LiquidityDropPct != 25 {
+		t.Fatalf("expected V2.8 risk defaults: %+v", s.Config)
+	}
+}
+
+func TestAutoEntryRejectsUnstableLiquidity(t *testing.T) {
+	s := NewSimState()
+	s.AutoProfile = AutoProfileTest
+	now := time.Now()
+	q := testQuote(1.02)
+	q.Chain = "bsc"
+	q.Score = 60
+	q.Liquidity = 15000
+	q.Security = "安全未验证"
+	q.Time = now
+	start := now.Add(-75 * time.Second)
+	for i, px := range []float64{1.00, 1.004, 1.008, 1.012, 1.016, 1.02} {
+		liq := 20000.0
+		if i >= 3 {
+			liq = 15000
+		}
+		s.Snapshots[simKey(q.Chain, q.Address)] = append(s.Snapshots[simKey(q.Chain, q.Address)], PriceSnapshot{Time: start.Add(time.Duration(i) * 15 * time.Second), Price: px, Liquidity: liq})
+	}
+	if ok, reason := s.autoEligible(q, now); ok || reason != "观察期流动性不稳定" {
+		t.Fatalf("expected unstable liquidity rejection, ok=%v reason=%q", ok, reason)
+	}
+}
+
+func TestSecurityDeteriorationForcesExit(t *testing.T) {
+	s := NewSimState()
+	now := time.Now()
+	p, err := s.Buy(testQuote(1), 5, "自动策略：test", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := testQuote(1.05)
+	bad.Security = "严重风险"
+	bad.Score = 0
+	s.Update([]SimQuote{bad}, now.Add(time.Minute))
+	if len(s.Positions) != 0 || len(s.Trades) != 1 || s.Trades[0].PositionID != p.ID {
+		t.Fatalf("security deterioration must exit: positions=%d trades=%+v", len(s.Positions), s.Trades)
+	}
+}

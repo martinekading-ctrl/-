@@ -12,35 +12,42 @@ import (
 // SimConfig contains deliberately conservative defaults for a small paper account.
 // All percentages use human units (for example 8 means 8%).
 type SimConfig struct {
-	InitialCash         float64 `json:"initial_cash"`
-	PositionSize        float64 `json:"position_size"`
-	MaxPositions        int     `json:"max_positions"`
-	DailyLossLimit      float64 `json:"daily_loss_limit"`
-	StopLossPct         float64 `json:"stop_loss_pct"`
-	TakeProfit1Pct      float64 `json:"take_profit1_pct"`
-	TakeProfit2Pct      float64 `json:"take_profit2_pct"`
-	TrailingStopPct     float64 `json:"trailing_stop_pct"`
-	LiquidityDropPct    float64 `json:"liquidity_drop_pct"`
-	MaxHoldingHours     float64 `json:"max_holding_hours"`
-	DexFeePct           float64 `json:"dex_fee_pct"`
-	GasUSDC             float64 `json:"gas_usdc"`
-	BaseSlippagePct     float64 `json:"base_slippage_pct"`
-	MaxSlippagePct      float64 `json:"max_slippage_pct"`
-	MinScore            int     `json:"min_score"`
-	MinLiquidity        float64 `json:"min_liquidity"`
-	MaxTaxPct           float64 `json:"max_tax_pct"`
-	ObserveMinutes      float64 `json:"observe_minutes"`
-	AutoCooldownMinutes float64 `json:"auto_cooldown_minutes"`
+	InitialCash           float64 `json:"initial_cash"`
+	PositionSize          float64 `json:"position_size"`
+	MaxPositions          int     `json:"max_positions"`
+	DailyLossLimit        float64 `json:"daily_loss_limit"`
+	StopLossPct           float64 `json:"stop_loss_pct"`
+	TakeProfit1Pct        float64 `json:"take_profit1_pct"`
+	TakeProfit2Pct        float64 `json:"take_profit2_pct"`
+	TrailingStopPct       float64 `json:"trailing_stop_pct"`
+	LiquidityDropPct      float64 `json:"liquidity_drop_pct"`
+	MaxHoldingHours       float64 `json:"max_holding_hours"`
+	DexFeePct             float64 `json:"dex_fee_pct"`
+	GasUSDC               float64 `json:"gas_usdc"`
+	BaseSlippagePct       float64 `json:"base_slippage_pct"`
+	MaxSlippagePct        float64 `json:"max_slippage_pct"`
+	MinScore              int     `json:"min_score"`
+	MinLiquidity          float64 `json:"min_liquidity"`
+	MaxTaxPct             float64 `json:"max_tax_pct"`
+	ObserveMinutes        float64 `json:"observe_minutes"`
+	AutoCooldownMinutes   float64 `json:"auto_cooldown_minutes"`
+	MaxConsecutiveLosses  int     `json:"max_consecutive_losses"`
+	LossCooldownMinutes   float64 `json:"loss_cooldown_minutes"`
+	MinValidationTrades   int     `json:"min_validation_trades"`
+	MinProfitFactor       float64 `json:"min_profit_factor"`
+	MaxValidationDrawdown float64 `json:"max_validation_drawdown"`
 }
 
 func DefaultSimConfig() SimConfig {
 	return SimConfig{
 		InitialCash: 100, PositionSize: 5, MaxPositions: 3, DailyLossLimit: 5,
 		StopLossPct: 8, TakeProfit1Pct: 12, TakeProfit2Pct: 20,
-		TrailingStopPct: 8, LiquidityDropPct: 30, MaxHoldingHours: 24,
+		TrailingStopPct: 8, LiquidityDropPct: 25, MaxHoldingHours: 6,
 		DexFeePct: 0.30, GasUSDC: 0.01, BaseSlippagePct: 0.80, MaxSlippagePct: 12,
 		MinScore: 80, MinLiquidity: 50_000, MaxTaxPct: 5,
 		ObserveMinutes: 3, AutoCooldownMinutes: 30,
+		MaxConsecutiveLosses: 3, LossCooldownMinutes: 180,
+		MinValidationTrades: 30, MinProfitFactor: 1.20, MaxValidationDrawdown: 12,
 	}
 }
 
@@ -58,6 +65,8 @@ type SimQuote struct {
 	Security   string    `json:"security"`
 	Buys       int       `json:"buys"`
 	Sells      int       `json:"sells"`
+	Volume24   float64   `json:"volume24"`
+	AgeHours   float64   `json:"age_hours"`
 	Source     string    `json:"source"`
 	Time       time.Time `json:"time"`
 }
@@ -86,8 +95,12 @@ type SimPosition struct {
 	LowestPrice      float64   `json:"lowest_price"`
 	BuyTaxPct        float64   `json:"buy_tax_pct"`
 	SellTaxPct       float64   `json:"sell_tax_pct"`
+	EntryScore       int       `json:"entry_score"`
+	EntrySecurity    string    `json:"entry_security"`
+	LastQuoteAt      time.Time `json:"last_quote_at"`
 	OpenedAt         time.Time `json:"opened_at"`
 	TP1Done          bool      `json:"tp1_done"`
+	Automated        bool      `json:"automated"`
 	EntryReason      string    `json:"entry_reason"`
 }
 
@@ -108,6 +121,7 @@ type SimTrade struct {
 	OpenedAt      time.Time `json:"opened_at"`
 	ClosedAt      time.Time `json:"closed_at"`
 	Reason        string    `json:"reason"`
+	Automated     bool      `json:"automated"`
 }
 
 type SimMetrics struct {
@@ -141,13 +155,15 @@ type SimState struct {
 func NewSimState() *SimState {
 	cfg := DefaultSimConfig()
 	return &SimState{
-		Version: 1, Config: cfg, Cash: cfg.InitialCash, Snapshots: map[string][]PriceSnapshot{},
-		NextID: 1, EquityPeak: cfg.InitialCash, LastAutoEntry: map[string]time.Time{}, AutoProfile: 1,
+		Version: 2, Config: cfg, Cash: cfg.InitialCash, Snapshots: map[string][]PriceSnapshot{},
+		AutoEnabled: true, NextID: 1, EquityPeak: cfg.InitialCash,
+		LastAutoEntry: map[string]time.Time{}, AutoProfile: AutoProfileStandard,
 	}
 }
 
 func (s *SimState) Normalize() {
 	d := DefaultSimConfig()
+	oldVersion := s.Version
 	if s.Version == 0 {
 		s.Version = 1
 	}
@@ -208,6 +224,21 @@ func (s *SimState) Normalize() {
 	if s.Config.AutoCooldownMinutes <= 0 {
 		s.Config.AutoCooldownMinutes = d.AutoCooldownMinutes
 	}
+	if s.Config.MaxConsecutiveLosses <= 0 {
+		s.Config.MaxConsecutiveLosses = d.MaxConsecutiveLosses
+	}
+	if s.Config.LossCooldownMinutes <= 0 {
+		s.Config.LossCooldownMinutes = d.LossCooldownMinutes
+	}
+	if s.Config.MinValidationTrades <= 0 {
+		s.Config.MinValidationTrades = d.MinValidationTrades
+	}
+	if s.Config.MinProfitFactor <= 0 {
+		s.Config.MinProfitFactor = d.MinProfitFactor
+	}
+	if s.Config.MaxValidationDrawdown <= 0 {
+		s.Config.MaxValidationDrawdown = d.MaxValidationDrawdown
+	}
 	if s.Snapshots == nil {
 		s.Snapshots = map[string][]PriceSnapshot{}
 	}
@@ -233,6 +264,18 @@ func (s *SimState) Normalize() {
 	}
 	if s.EquityPeak <= 0 {
 		s.EquityPeak = s.Config.InitialCash
+	}
+	if oldVersion < 2 {
+		// V2.8 turns on paper automation for existing local simulation accounts.
+		// This migration never enables wallet access or real transaction submission.
+		s.Version = 2
+		s.AutoEnabled = true
+		if s.Config.MaxHoldingHours == 24 {
+			s.Config.MaxHoldingHours = d.MaxHoldingHours
+		}
+		if s.Config.LiquidityDropPct == 30 {
+			s.Config.LiquidityDropPct = d.LiquidityDropPct
+		}
 	}
 }
 
@@ -286,17 +329,20 @@ type autoRules struct {
 	RequireVerified bool
 	RequireTaxKnown bool
 	RequirePullback bool
+	MinBuySellRatio float64
+	MaxAgeHours     float64
+	MaxStepMovePct  float64
 }
 
 func (s *SimState) rules() autoRules {
 	s.Normalize()
 	switch s.AutoProfile {
 	case AutoProfileConservative:
-		return autoRules{80, 50000, 5, 3, 1, 12, 8, true, true, true}
+		return autoRules{80, 50000, 5, 3, 1, 12, 8, true, true, true, 1.25, 6, 8}
 	case AutoProfileTest:
-		return autoRules{55, 10000, 12, 1, 0.2, 20, 5, false, false, false}
+		return autoRules{55, 10000, 12, 1, 0.2, 20, 5, false, false, false, 1.0, 24, 20}
 	default:
-		return autoRules{70, 25000, 8, 2, 0.5, 15, 6, true, true, true}
+		return autoRules{70, 25000, 8, 2, 0.5, 15, 6, true, true, true, 1.15, 12, 12}
 	}
 }
 func clamp(v, lo, hi float64) float64 {
@@ -402,7 +448,11 @@ func (s *SimState) Buy(q SimQuote, amount float64, reason string, now time.Time)
 		EntryCost: amount, RemainingCost: amount, EntryLiquidity: q.Liquidity,
 		CurrentPrice: q.Price, CurrentLiquidity: q.Liquidity,
 		HighestPrice: q.Price, LowestPrice: q.Price, BuyTaxPct: q.BuyTaxPct, SellTaxPct: q.SellTaxPct,
-		OpenedAt: now, EntryReason: reason,
+		EntryScore: q.Score, EntrySecurity: q.Security, LastQuoteAt: q.Time,
+		OpenedAt: now, Automated: strings.HasPrefix(reason, "自动策略："), EntryReason: reason,
+	}
+	if p.LastQuoteAt.IsZero() {
+		p.LastQuoteAt = now
 	}
 	s.NextID++
 	s.Cash -= amount
@@ -471,6 +521,7 @@ func (s *SimState) Sell(positionID int64, fraction float64, q SimQuote, reason s
 		Quantity: qty, EntryPrice: p.EntryPrice, ExitPrice: q.Price,
 		CostAllocated: costAllocated, NetProceeds: net, Fees: fees,
 		PnL: pnl, PnLPct: pnlPct, OpenedAt: p.OpenedAt, ClosedAt: now, Reason: reason,
+		Automated: p.Automated,
 	}
 	s.NextID++
 	s.Cash += net
@@ -510,6 +561,10 @@ func (s *SimState) Update(quotes []SimQuote, now time.Time) []string {
 		}
 		p.CurrentPrice, p.CurrentLiquidity = q.Price, q.Liquidity
 		p.SellTaxPct = q.SellTaxPct
+		p.LastQuoteAt = q.Time
+		if p.LastQuoteAt.IsZero() {
+			p.LastQuoteAt = now
+		}
 		if p.HighestPrice <= 0 || q.Price > p.HighestPrice {
 			p.HighestPrice = q.Price
 		}
@@ -541,12 +596,18 @@ func (s *SimState) Update(quotes []SimQuote, now time.Time) []string {
 			ret = (net - p.RemainingCost) / p.RemainingCost * 100
 		}
 		reason := ""
-		if p.EntryLiquidity > 0 && q.Liquidity > 0 && q.Liquidity <= p.EntryLiquidity*(1-s.Config.LiquidityDropPct/100) {
+		if q.Security == "严重风险" || q.Score <= 0 {
+			reason = "安全状态恶化，紧急退出"
+		} else if p.EntryScore > 0 && q.Score > 0 && p.EntryScore-q.Score >= 20 {
+			reason = "质量分较入场下降 20 分"
+		} else if p.EntryLiquidity > 0 && q.Liquidity > 0 && q.Liquidity <= p.EntryLiquidity*(1-s.Config.LiquidityDropPct/100) {
 			reason = "流动性下降达到紧急退出线"
 		} else if ret <= -s.Config.StopLossPct {
 			reason = fmt.Sprintf("止损 %.1f%%", s.Config.StopLossPct)
 		} else if now.Sub(p.OpenedAt).Hours() >= s.Config.MaxHoldingHours {
 			reason = "持仓达到最长时间"
+		} else if p.TP1Done && ret <= 0.5 {
+			reason = "第一止盈后回落至成本保护线"
 		} else if p.HighestPrice >= p.EntryPrice*1.08 && q.Price <= p.HighestPrice*(1-s.Config.TrailingStopPct/100) {
 			reason = fmt.Sprintf("从最高价回撤 %.1f%%", s.Config.TrailingStopPct)
 		}
@@ -606,6 +667,9 @@ func (s *SimState) dailyRealized(now time.Time) float64 {
 
 func (s *SimState) autoEligible(q SimQuote, now time.Time) (bool, string) {
 	r := s.rules()
+	if !q.Time.IsZero() && now.Sub(q.Time) > 90*time.Second {
+		return false, "行情数据已过期"
+	}
 	if q.Price <= 0 || q.Liquidity < r.MinLiquidity {
 		return false, "流动性或价格不足"
 	}
@@ -614,6 +678,9 @@ func (s *SimState) autoEligible(q SimQuote, now time.Time) (bool, string) {
 	}
 	if q.Score < r.MinScore {
 		return false, "评分不足"
+	}
+	if q.AgeHours > r.MaxAgeHours {
+		return false, "已超过自动狙击观察窗口"
 	}
 	if r.RequireVerified && q.Security != "已验证" {
 		return false, "需要安全已验证"
@@ -624,11 +691,14 @@ func (s *SimState) autoEligible(q SimQuote, now time.Time) (bool, string) {
 	if q.TaxKnown && (q.BuyTaxPct > r.MaxTaxPct || q.SellTaxPct > r.MaxTaxPct) {
 		return false, "税费过高"
 	}
-	if q.Sells <= 0 || q.Buys < q.Sells {
+	if q.Sells <= 0 || float64(q.Buys)/float64(q.Sells) < r.MinBuySellRatio {
 		return false, "买卖强度不足"
 	}
 	if s.hasPositionOn(q.Chain, q.Address) {
 		return false, "已有持仓"
+	}
+	if s.chainPositionCount(q.Chain) >= 1 {
+		return false, "同一链已有自动风险敞口"
 	}
 	k := simKey(q.Chain, q.Address)
 	if t := s.LastAutoEntry[k]; !t.IsZero() && now.Sub(t) < time.Duration(s.Config.AutoCooldownMinutes*float64(time.Minute)) {
@@ -656,6 +726,27 @@ func (s *SimState) autoEligible(q SimQuote, now time.Time) (bool, string) {
 	ret := (cur/start - 1) * 100
 	if ret < r.MinTrend || ret > r.MaxTrend {
 		return false, fmt.Sprintf("趋势不在 %.1f%%–%.1f%%", r.MinTrend, r.MaxTrend)
+	}
+	startLiquidity := recent[0].Liquidity
+	if startLiquidity > 0 {
+		minLiquidity := startLiquidity
+		for _, x := range recent {
+			if x.Liquidity > 0 && x.Liquidity < minLiquidity {
+				minLiquidity = x.Liquidity
+			}
+		}
+		if recent[len(recent)-1].Liquidity < startLiquidity*0.90 || minLiquidity < startLiquidity*0.80 {
+			return false, "观察期流动性不稳定"
+		}
+	}
+	for i := 1; i < len(recent); i++ {
+		if recent[i-1].Price <= 0 {
+			continue
+		}
+		step := math.Abs(recent[i].Price/recent[i-1].Price-1) * 100
+		if step > r.MaxStepMovePct {
+			return false, "短时价格跳变过大"
+		}
 	}
 	high := start
 	lowAfterHigh := math.MaxFloat64
@@ -700,18 +791,25 @@ func (s *SimState) AutoEvaluate(quotes []SimQuote, now time.Time) []string {
 	if s.dailyRealized(now) <= -s.Config.DailyLossLimit {
 		return []string{"今日模拟亏损达到上限，自动策略暂停开仓"}
 	}
+	if paused, remain := s.riskPause(now); paused {
+		return []string{fmt.Sprintf("连续亏损熔断，剩余 %.0f 分钟", math.Ceil(remain.Minutes()))}
+	}
 	sorted := append([]SimQuote(nil), quotes...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Score > sorted[j].Score })
 	events := []string{}
 	for _, q := range sorted {
-		if len(s.Positions) >= s.Config.MaxPositions || s.Cash < s.Config.PositionSize {
+		if len(s.Positions) >= s.Config.MaxPositions || s.Cash < 1 {
 			break
 		}
 		ok, reason := s.autoEligible(q, now)
 		if !ok {
 			continue
 		}
-		p, err := s.Buy(q, s.Config.PositionSize, "自动策略："+reason, now)
+		amount := s.dynamicPositionSize(q)
+		if amount <= 0 {
+			continue
+		}
+		p, err := s.Buy(q, amount, "自动策略："+reason, now)
 		if err != nil {
 			continue
 		}
