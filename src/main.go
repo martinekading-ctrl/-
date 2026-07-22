@@ -864,11 +864,12 @@ func drawCommonHeader(dc HDC, l layout, subtitle string) {
 }
 
 func drawSimUI(dc HDC, l layout) {
-	drawCommonHeader(dc, l, "100 USDC 本地模拟账户 · 自动策略默认关闭 · 不连接钱包")
+	drawCommonHeader(dc, l, "V2.8 自动策略验证 · 真实成本模拟 · 不连接钱包")
 	if app.sim == nil {
 		app.sim = NewSimState()
 	}
 	m := app.sim.Metrics(tokensToQuotes(app.results, time.Now()))
+	v := app.sim.Validation()
 
 	roundRect(dc, l.toolbar, col.panel, col.border, s(9))
 	drawButton(dc, idSimSell, l.buttons[idSimSell], "卖出选中", selectedPositionValid(), false)
@@ -891,9 +892,9 @@ func drawSimUI(dc HDC, l layout) {
 	ellipse(dc, rect(knobX, sw.Top+s(3), s(14), s(14)), col.text, col.text)
 	text(dc, "自动模拟策略", rect(sw.Right+s(10), ar.Top, ar.Right-sw.Right-s(18), height(ar)), fnts.small, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 
-	vals := []string{fmt.Sprintf("%.2f", m.Equity), fmt.Sprintf("%.2f", m.Cash), fmt.Sprintf("%+.2f", m.NetPnL), fmt.Sprintf("%.1f%%", m.WinRate)}
-	labels := []string{"模拟总资产 USDC", "可用余额", "累计净盈亏", "已完成交易胜率"}
-	subs := []string{fmt.Sprintf("持仓市值 %.2f", m.PositionValue), fmt.Sprintf("当前持仓 %d / %d", len(app.sim.Positions), app.sim.Config.MaxPositions), fmt.Sprintf("最大回撤 %.1f%%", m.MaxDrawdown), fmt.Sprintf("完成 %d 笔退出记录", m.Trades)}
+	vals := []string{fmt.Sprintf("%.2f", m.Equity), fmt.Sprintf("%.2f", m.Cash), fmt.Sprintf("%+.2f", m.NetPnL), fmt.Sprintf("%.1f%%", v.WinRate)}
+	labels := []string{"模拟总资产 USDC", "可用余额", "累计净盈亏", "自动完整交易胜率"}
+	subs := []string{fmt.Sprintf("持仓市值 %.2f", m.PositionValue), fmt.Sprintf("当前持仓 %d / %d", len(app.sim.Positions), app.sim.Config.MaxPositions), fmt.Sprintf("最大回撤 %.1f%%", m.MaxDrawdown), fmt.Sprintf("样本 %d / %d · PF %s", v.ClosedPositions, v.RequiredPositions, v.ProfitFactorText())}
 	accents := []uint32{col.blue, col.cyan, col.green, col.yellow}
 	for i, r := range l.cards {
 		roundRect(dc, r, col.panel, col.border, s(9))
@@ -909,11 +910,14 @@ func drawSimUI(dc HDC, l layout) {
 		text(dc, subs[i], rect(r.Left+s(18), r.Bottom-s(27), width(r)-s(28), s(20)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 	}
 	bf, bb := col.yellowBg, col.yellow
-	rules := app.sim.rules()
-	banner := fmt.Sprintf("%s档待机：评分≥%d、流动性≥%s、观察≥%.0f分钟；严重合约风险始终禁止开仓。", app.sim.ProfileName(), rules.MinScore, money(rules.MinLiquidity), rules.ObserveMinutes)
+	banner := fmt.Sprintf("自动模拟已关闭 · %s · 样本 %d/%d；真钱交易保持锁定。", v.Status, v.ClosedPositions, v.RequiredPositions)
 	if app.sim.AutoEnabled {
+		bf, bb = col.panel2, col.cyan
+		banner = fmt.Sprintf("自动模拟运行中（%s档）· %s %d/%d · PF %s · 真钱交易锁定。", app.sim.ProfileName(), v.Status, v.ClosedPositions, v.RequiredPositions, v.ProfitFactorText())
+	}
+	if v.Passed {
 		bf, bb = col.greenBg, col.green
-		banner = fmt.Sprintf("自动模拟已开启（%s档）：评分≥%d、流动性≥%s、观察≥%.0f分钟；只使用虚拟 USDC。", app.sim.ProfileName(), rules.MinScore, money(rules.MinLiquidity), rules.ObserveMinutes)
+		banner = fmt.Sprintf("纸面验证通过：%d 笔完整自动交易 · 净收益 %+.2f · PF %s；仍需继续观察。", v.ClosedPositions, v.NetPnL, v.ProfitFactorText())
 	}
 	roundRect(dc, l.banner, bf, bb, s(7))
 	text(dc, banner, inset(l.banner, s(14)), fnts.body, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
@@ -1048,11 +1052,12 @@ func drawSimTrades(dc HDC, l layout) {
 }
 
 func drawSimDetail(dc HDC, r RECT, m SimMetrics) {
-	text(dc, "模拟系统说明", rect(r.Left+s(16), r.Top+s(10), width(r)-s(32), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, "策略验证与风控", rect(r.Left+s(16), r.Top+s(10), width(r)-s(32), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	line(dc, r.Left+s(14), r.Top+s(48), r.Right-s(14), r.Top+s(48), col.border)
 	body := rect(r.Left+s(16), r.Top+s(58), width(r)-s(32), height(r)-s(70))
 	y := body.Top
 	rules := app.sim.rules()
+	v := app.sim.Validation()
 	securityLine := "• 需要安全已验证，税费必须已确认"
 	if !rules.RequireVerified {
 		securityLine = "• 测试档允许安全未验证/税费未知，但严重风险仍硬性禁止"
@@ -1061,7 +1066,7 @@ func drawSimDetail(dc HDC, r RECT, m SimMetrics) {
 	if !rules.RequirePullback {
 		patternLine = "• 测试档只要求基础上涨趋势，目的是尽快验证模拟系统"
 	}
-	lines := []string{fmt.Sprintf("初始本金：%.2f USDC", app.sim.Config.InitialCash), fmt.Sprintf("单笔仓位：%.2f USDC · 最多 %d 笔", app.sim.Config.PositionSize, app.sim.Config.MaxPositions), fmt.Sprintf("已实现：%+.2f · 未实现：%+.2f", m.RealizedPnL, m.UnrealizedPnL), fmt.Sprintf("模拟成本：DEX %.2f%% + Gas %.2f USDC + 税费/滑点", app.sim.Config.DexFeePct, app.sim.Config.GasUSDC), "", fmt.Sprintf("当前自动策略：%s档", app.sim.ProfileName()), fmt.Sprintf("• 评分≥%d，流动性≥%s，观察≥%.0f分钟", rules.MinScore, money(rules.MinLiquidity), rules.ObserveMinutes), securityLine, fmt.Sprintf("• 已知买卖税≤%.0f%%，买入笔数不低于卖出", rules.MaxTaxPct), patternLine, "", "重要：测试档只用于验证开仓/止损/止盈流程，不代表更容易盈利。", "报价延迟、MEV、卖不出和撤池仍可能让实盘更差。"}
+	lines := []string{fmt.Sprintf("验证状态：%s · 完整自动交易 %d/%d", v.Status, v.ClosedPositions, v.RequiredPositions), fmt.Sprintf("自动净收益：%+.2f · 利润因子：%s · 期望/笔：%+.3f", v.NetPnL, v.ProfitFactorText(), v.Expectancy), fmt.Sprintf("自动样本最大回撤：%.1f%% · 通过门槛≤%.0f%%", v.MaxDrawdown, app.sim.Config.MaxValidationDrawdown), fmt.Sprintf("连续亏损：%d/%d · 达线暂停 %.0f 分钟", v.ConsecutiveLosses, app.sim.Config.MaxConsecutiveLosses, app.sim.Config.LossCooldownMinutes), "", fmt.Sprintf("当前自动策略：%s档 · 动态仓位≤%.2f USDC", app.sim.ProfileName(), app.sim.Config.PositionSize), fmt.Sprintf("• 评分≥%d，流动性≥%s，观察≥%.0f分钟，池龄≤%.0f小时", rules.MinScore, money(rules.MinLiquidity), rules.ObserveMinutes, rules.MaxAgeHours), securityLine, fmt.Sprintf("• 已知买卖税≤%.0f%%，买卖笔数比≥%.2f", rules.MaxTaxPct, rules.MinBuySellRatio), patternLine, "• 同链只开一个仓位；流动性不稳或短时暴涨拒绝追入", "", "成本已计入 DEX 费、Gas、税费和流动性滑点；模拟盈利不等于实盘盈利。"}
 	for _, ln := range lines {
 		h := s(25)
 		if ln == "" {
@@ -1449,13 +1454,15 @@ func drawModal(dc HDC, l layout) {
 			"1. 程序默认每 5 秒增量检查 Base、BSC、Arbitrum 新区块；也可以点‘立即扫描’手动刷新。\n" +
 			"2. 在代币雷达选择候选，查看评分和风险证据；有真实价格时可点‘模拟买入’。\n" +
 			"3. 切换到‘模拟盘’，查看持仓、净盈亏、止损止盈和交易记录。\n" +
-			"4. 点击‘策略档位’可切换：保守、标准、测试；自动模拟默认关闭。\n\n" +
+			"4. 点击‘策略档位’可切换：保守、标准、测试；V2.8 默认自动运行模拟策略。\n\n" +
 			"三种策略档位\n" +
 			"保守：80分、5万美元流动性、观察3分钟；标准：70分、2.5万美元、观察2分钟；测试：55分、1万美元、观察1分钟。测试档用于更快验证开仓、止损和止盈，不代表更安全或更赚钱。严重合约风险在任何档位都禁止开仓。\n\n" +
 			"评分与模拟的区别\n" +
 			"质量分只是研究优先级，不是买入信号。模拟盘会估算 DEX 手续费、Gas、税费和滑点，但无法完全复现实盘的 MEV、报价延迟和无法卖出。\n\n" +
 			"退出规则\n" +
-			"初始 100 USDC，单笔 5 USDC，最多 3 个持仓；亏损 8% 止损，盈利 12% 卖一半，盈利 20% 清仓，从最高点回撤 8% 退出。\n\n" +
+			"初始 100 USDC，动态仓位最高 5 USDC，最多 3 个持仓；亏损 8% 止损，盈利 12% 卖一半，盈利 20% 清仓，从最高点回撤 8% 退出。连续亏损 3 笔暂停 3 小时。\n\n" +
+			"盈利验证\n" +
+			"只按完整自动持仓统计。至少 30 笔、扣除成本后净收益为正、利润因子不低于 1.20、最大回撤不高于 12%，才显示纸面验证通过。\n\n" +
 			"注意\n" +
 			"程序不连接钱包、不读取助记词、不发送真实交易。模拟盈利不代表实盘可以盈利。"
 		text(dc, body, rect(r.Left+s(34), r.Top+s(88), width(r)-s(68), height(r)-s(178)), fnts.body, col.muted, DT_LEFT|DT_WORDBREAK)
@@ -1481,7 +1488,7 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		loadSimState()
 		loadPreferences()
 		app.monitor = loadMonitorState()
-		addLog("V2.7 已启动：可信关注列表、可追溯快照、异常告警和监控报告")
+		addLog("V2.8 已启动：自动模拟、动态仓位、连续亏损熔断和纸面盈利验证")
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
 		return 0
@@ -2140,7 +2147,7 @@ type httpResult struct {
 func initWinHTTPSession() (HINTERNET, error) {
 	winHTTPOnce.Do(func() {
 		h, _, callErr := pWinHttpOpen.Call(
-			uintptr(unsafe.Pointer(utf16Ptr("MultiChainTokenRadar/2.7"))),
+			uintptr(unsafe.Pointer(utf16Ptr("MultiChainTokenRadar/2.8"))),
 			WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
 			0,
 			0,
@@ -3757,7 +3764,11 @@ func diagnose() string {
 func tokensToQuotes(tokens []Token, now time.Time) []SimQuote {
 	out := make([]SimQuote, 0, len(tokens))
 	for _, t := range tokens {
-		out = append(out, SimQuote{Chain: t.Chain, Address: t.Address, Symbol: t.Symbol, Name: t.Name, Price: t.Price, Liquidity: t.Liquidity, BuyTaxPct: t.BuyTaxPct, SellTaxPct: t.SellTaxPct, TaxKnown: t.TaxKnown, Score: t.Score, Security: t.Security, Buys: t.Buys24, Sells: t.Sells24, Source: t.Source, Time: now})
+		quoteTime := t.UpdatedAt
+		if quoteTime.IsZero() {
+			quoteTime = now
+		}
+		out = append(out, SimQuote{Chain: t.Chain, Address: t.Address, Symbol: t.Symbol, Name: t.Name, Price: t.Price, Liquidity: t.Liquidity, BuyTaxPct: t.BuyTaxPct, SellTaxPct: t.SellTaxPct, TaxKnown: t.TaxKnown, Score: t.Score, Security: t.Security, Buys: t.Buys24, Sells: t.Sells24, Volume24: t.Volume24, AgeHours: t.AgeHours, Source: t.Source, Time: quoteTime})
 	}
 	return out
 }
@@ -4033,7 +4044,7 @@ func addLog(s string) {
 	if len(app.logs) > 100 {
 		app.logs = app.logs[len(app.logs)-100:]
 	}
-	logPath := filepath.Join(dataDir(), "runtime_v27.log")
+	logPath := filepath.Join(dataDir(), "runtime_v28.log")
 	rotateRuntimeLog(logPath)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
@@ -4228,8 +4239,8 @@ func main() {
 	// Per-monitor v2 DPI awareness. -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
-	className := utf16Ptr("MultiChainTokenRadarV27Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.7 · 可信监控与异常告警")
+	className := utf16Ptr("MultiChainTokenRadarV28Window")
+	title := utf16Ptr("Multi-Chain Token Radar V2.8 · 自动模拟策略验证")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {

@@ -1,58 +1,84 @@
-# Multi-Chain Token Radar V2.7
+# Multi-Chain Token Radar V2.8
 
-V2.7 is a Windows x64 research and monitoring application for Base, BSC, and
-Arbitrum. It combines new-pool discovery, DexScreener market data, GoPlus risk
-fields, a local paper account, and an auditable watch-list workflow.
+V2.8 is a Windows x64 research application for Base, BSC, and Arbitrum. Its
+current workflow is:
 
-It does not connect to a wallet, store private keys, submit transactions, or
-promise trading returns.
+1. discover recently created DEX pools;
+2. enrich candidates with public market and contract-risk data;
+3. observe price and liquidity before entry;
+4. execute local paper trades with estimated costs;
+5. exit automatically under deterministic risk and profit rules;
+6. validate the strategy from complete automated positions.
 
-## Trusted monitoring workflow
+The application does not connect to a wallet, store private keys, sign orders,
+or submit real transactions. A profitable paper result is not a promise of
+future or live-trading profit.
 
-1. Select a token and choose **加入关注**.
-2. The token remains in subsequent scans even when it is no longer a newly
-   discovered candidate.
-3. At most once every 30 seconds, the app records a local snapshot containing
-   observed time, upstream update time, chain, contract, pool, block, price,
-   liquidity, volume, score, security state, and source.
-4. The app records rate-limited alerts for price moves of 10% or more,
-   liquidity drops of 20% or more, security-state changes, score drops of 15
-   points or more, missing results, and source data older than five minutes.
-5. Choose **监控报告** to export snapshots and alerts as a UTF-8 CSV file.
+## V2.8 paper strategy
 
-These records make the data inspectable; they do not make third-party data
-infallible. Important findings still need manual verification against an
-explorer, DEX, and contract source.
+Paper automation is enabled by default for new accounts and is enabled once
+when an older local simulation account is migrated. It uses virtual USDC only.
 
-## Real-time data
+Entry protection now includes:
 
-The five-second monitor uses free public RPC endpoints and public DexScreener
-and GoPlus APIs. It preserves the last valid result when providers fail and
-offers connection diagnostics. Public services can rate-limit or delay data.
+- conservative, standard, and test profiles;
+- fresh-quote, pool-age, score, security, tax, and buy/sell-ratio gates;
+- a real observation period instead of entering on one quote;
+- rejection of unstable liquidity and abnormal one-step price jumps;
+- pullback-and-recovery confirmation for conservative and standard profiles;
+- one open position per chain;
+- liquidity-aware position sizing, capped at 5 USDC;
+- smaller sizing after consecutive losses.
+
+Exit protection includes estimated DEX fees, gas, taxes, and slippage; an 8%
+net stop; partial profit-taking at 12%; final profit-taking at 20%; an 8%
+trailing exit; a six-hour maximum hold; a 25% liquidity-drop exit; a security
+or score deterioration exit; and cost protection after the first take-profit.
+
+Three consecutive losing automated positions pause new entries for three
+hours. The existing daily loss limit remains active.
+
+## Profitability validation
+
+V2.8 counts one fully closed automated position as one validation sample.
+Partial exits from the same position are combined, and manual paper trades are
+excluded. The app displays paper validation as passed only when all of the
+following are true:
+
+- at least 30 complete automated positions;
+- net P&L after modeled costs is positive;
+- profit factor is at least 1.20;
+- maximum account drawdown is no more than 12%.
+
+This gate is deliberately labeled **paper validation**. Free public RPC and API
+data can be delayed; simulated fills cannot fully reproduce MEV, failed swaps,
+honeypots, rapid liquidity removal, or live execution latency.
+
+## Monitoring and reports
+
+The watch list, local snapshots, abnormal-move alerts, and CSV monitoring
+report from V2.7 remain available. Simulation trades can also be exported to a
+UTF-8 CSV file from the simulation page.
 
 ## Free application updates
 
-The update source is configured as `martinekading-ctrl/-`. V2.7 checks public
-GitHub Releases at startup and at most every six hours. Installation is always
-user-initiated and requires a release ZIP plus `SHA256.txt`.
+The updater reads public releases from `martinekading-ctrl/-`. It requires a
+Windows x64 ZIP and a matching `SHA256.txt`. Update installation remains
+user-initiated.
 
-Local update configuration:
-
-```json
-{
-  "github_repository": "martinekading-ctrl/-"
-}
-```
-
-The file location is `%LocalAppData%\BaseTokenRadar\update_config_v26.json`;
-the V2.6 filename is retained so existing installations continue updating.
+The local update configuration is stored at
+`%LocalAppData%\BaseTokenRadar\update_config_v26.json`; the older filename is
+retained for compatibility.
 
 ## Build and test
 
 ```powershell
 go test ./...
+go vet ./...
 go build -trimpath -ldflags="-H=windowsgui -s -w" -o ..\MultiChainTokenRadar.exe .
 ```
 
-V2.7 adds unit coverage for watch-list persistence behavior, snapshot creation,
-alert thresholds, cooldown behavior, paper trading, and updater helpers.
+Unit coverage includes paper accounting, costs, stop/exit rules, automatic
+entry gates, cross-chain identity, complete-position validation, partial-exit
+grouping, loss-streak circuit breaking, migration behavior, monitoring, and
+update helpers.
