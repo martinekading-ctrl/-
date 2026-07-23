@@ -318,7 +318,7 @@ type appState struct {
 	listOffset        int // first visible filtered row; mouse wheel moves this continuously
 	pageScroll        int32
 	detailScroll      int32
-	filterMode        int // 0 all, 1 watched, 2 verified, 3 waiting data
+	filterMode        int // 0 all, 1 watched, 2 verified, 3 read-only review queue
 	sortMode          int // 0 score, 1 newest, 2 liquidity
 	searchText        string
 	searchFocused     bool
@@ -661,6 +661,24 @@ func radarPageSize(l layout) int {
 
 func radarRowHeight() int32 { return s(68) }
 
+func radarLayerCounts(tokens []Token) (strict, review int) {
+	for _, t := range tokens {
+		if t.PotentialEligible {
+			strict++
+		} else {
+			review++
+		}
+	}
+	return strict, review
+}
+
+func radarReviewReason(t Token) string {
+	if t.PotentialStage != "" {
+		return t.PotentialStage
+	}
+	return "未通过严格交易门槛"
+}
+
 func filteredResultIndices() []int {
 	query := strings.ToLower(strings.TrimSpace(app.searchText))
 	idxs := make([]int, 0, len(app.results))
@@ -672,10 +690,10 @@ func filteredResultIndices() []int {
 		case 2:
 			match = t.Security == "已验证"
 		case 3:
-			match = t.Grade == "等待市场数据" || t.Grade == "等待分析" || t.Price <= 0
+			match = !t.PotentialEligible
 		}
 		if match && query != "" {
-			hay := strings.ToLower(strings.Join([]string{t.Chain, t.Symbol, t.Name, t.Address, t.Source, t.Security, t.Grade}, " "))
+			hay := strings.ToLower(strings.Join([]string{t.Chain, t.Symbol, t.Name, t.Address, t.Source, t.Security, t.Grade, t.PotentialStage}, " "))
 			match = strings.Contains(hay, query)
 		}
 		if match {
@@ -967,7 +985,7 @@ func drawCommonHeader(dc HDC, l layout, subtitle string) {
 }
 
 func drawSimUI(dc HDC, l layout) {
-	drawCommonHeader(dc, l, "V2.15 淘汰复盘、风险快照与严格模拟验证 · 不连接钱包")
+	drawCommonHeader(dc, l, "V2.16 严格信号与只读审查队列 · 不连接钱包")
 	if app.sim == nil {
 		app.sim = NewSimState()
 	}
@@ -1269,10 +1287,13 @@ func drawRadarUI(dc HDC, l layout) {
 	}
 	ellipse(dc, rect(knobX, sw.Top+s(3), s(14), s(14)), col.text, col.text)
 	text(dc, "5秒实时监控", rect(sw.Right+s(10), ar.Top, ar.Right-sw.Right-s(18), height(ar)), fnts.small, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	// Cards. Strict signals and read-only review rows are intentionally counted
+	// separately: a non-empty screen must never imply that an order is allowed.
+	strictRows, reviewRows := radarLayerCounts(app.results)
 	// Cards
-	vals := []string{strconv.Itoa(len(app.results)), fmt.Sprintf("%d / %d", app.strictQualified, app.strictAwaiting), strconv.Itoa(app.strictRejected), strconv.Itoa(app.candidatePool)}
-	labels := []string{"严格雷达", "本轮通过 / 等待", "本轮淘汰", "多链候选库"}
-	subs := []string{"仅展示精确新池与安全门槛均通过的标的", "等待精确池市场索引后会再次检查", app.strictRejectNotes, fmt.Sprintf("%d 链最多保留 %d 个", len(chainModules), len(chainModules)*80)}
+	vals := []string{strconv.Itoa(strictRows), fmt.Sprintf("%d / %d", app.strictQualified, app.strictAwaiting), strconv.Itoa(reviewRows), strconv.Itoa(app.candidatePool)}
+	labels := []string{"严格信号", "本轮通过 / 等待", "只读审查队列", "多链候选库"}
+	subs := []string{"仅此类标的可模拟买入；为 0 不代表网络中断", "等待精确池市场索引后会再次检查", fmt.Sprintf("仅供复核，不可交易；本轮淘汰 %d · %s", app.strictRejected, app.strictRejectNotes), fmt.Sprintf("%d 链最多保留 %d 个", len(chainModules), len(chainModules)*80)}
 	accents := []uint32{col.blue, col.cyan, col.green, col.yellow}
 	for i, r := range l.cards {
 		roundRect(dc, r, col.panel, col.border, s(9))
@@ -1320,7 +1341,7 @@ func drawRadarUI(dc HDC, l layout) {
 	roundRect(dc, l.table, col.panel, col.border, s(9))
 	roundRect(dc, l.detail, col.panel, col.border, s(9))
 	roundRect(dc, l.logs, col.panel, col.border, s(9))
-	text(dc, "候选列表", rect(l.table.Left+s(16), l.table.Top+s(10), s(240), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, "严格信号 / 审查队列", rect(l.table.Left+s(16), l.table.Top+s(10), s(300), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	visible, filteredCount, _ := visibleResultIndices(l)
 	startNo := 0
 	endNo := 0
@@ -1328,11 +1349,11 @@ func drawRadarUI(dc HDC, l layout) {
 		startNo = app.listOffset + 1
 		endNo = startNo + len(visible) - 1
 	}
-	text(dc, fmt.Sprintf("显示 %d–%d / 共 %d 条 · 候选库 %d", startNo, endNo, filteredCount, app.candidatePool), rect(l.table.Right-s(390), l.table.Top+s(12), s(370), s(28)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, fmt.Sprintf("显示 %d–%d / 共 %d 条 · 严格 %d · 审查 %d", startNo, endNo, filteredCount, strictRows, reviewRows), rect(l.table.Right-s(460), l.table.Top+s(12), s(440), s(28)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
 	drawButton(dc, idFilterAll, l.buttons[idFilterAll], "全部", true, app.filterMode == 0)
 	drawButton(dc, idFilterWatch, l.buttons[idFilterWatch], "已关注", true, app.filterMode == 1)
 	drawButton(dc, idFilterSafe, l.buttons[idFilterSafe], "已验证", true, app.filterMode == 2)
-	drawButton(dc, idFilterWait, l.buttons[idFilterWait], "待数据", true, app.filterMode == 3)
+	drawButton(dc, idFilterWait, l.buttons[idFilterWait], "审查队列", true, app.filterMode == 3)
 	drawButton(dc, idSortMode, l.buttons[idSortMode], sortModeText(), true, false)
 	searchFill := col.panel3
 	searchBorder := col.border
@@ -1359,7 +1380,7 @@ func drawRadarUI(dc HDC, l layout) {
 		text(dc, h, rect(x, l.tableHeader.Top, cw, height(l.tableHeader)), fnts.table, col.muted, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 		x += cw
 	}
-	if len(app.results) == 0 {
+	if filteredCount == 0 {
 		drawEmpty(dc, l.table)
 	} else {
 		drawRows(dc, l)
@@ -1401,8 +1422,14 @@ func drawEmpty(dc HDC, panel RECT) {
 	cy := panel.Top + height(panel)/2
 	ellipse(dc, rect(cx-s(28), cy-s(58), s(56), s(56)), rgb(10, 31, 49), col.cyan)
 	text(dc, "—", rect(cx-s(28), cy-s(58), s(56), s(56)), fnts.section, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-	text(dc, "还没有候选数据", rect(cx-s(200), cy+s(8), s(400), s(28)), fnts.section, col.text, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-	text(dc, "第 1 步：先点“演示数据”熟悉界面  ·  第 2 步：点击“立即扫描”并等待 20–60 秒", rect(cx-s(360), cy+s(40), s(720), s(28)), fnts.small, col.muted, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+	title := "当前没有严格信号或可审查候选"
+	detail := "严格信号为 0 时不会模拟买入；请保持监控，新的等待或淘汰项目会进入“审查队列”并附上原因。"
+	if app.filterMode == 3 {
+		title = "当前没有可审查的近期候选"
+		detail = "审查队列只保留近 6 小时内有明确拦截原因的项目；切回“全部”可查看严格信号。"
+	}
+	text(dc, title, rect(cx-s(270), cy+s(8), s(540), s(28)), fnts.section, col.text, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+	text(dc, detail, rect(cx-s(390), cy+s(40), s(780), s(45)), fnts.small, col.muted, DT_CENTER|DT_WORDBREAK)
 }
 
 func drawRows(dc HDC, l layout) {
@@ -1422,7 +1449,15 @@ func drawRows(dc HDC, l layout) {
 			fillRect(dc, rr, rgb(17, 39, 65))
 		}
 		line(dc, rr.Left, rr.Bottom, rr.Right, rr.Bottom, rgb(25, 47, 74))
-		vals := []string{strconv.Itoa(t.Score), fmt.Sprintf("[%s] %s  %s", chainLabel(t.Chain), t.Symbol, t.Name), t.Security, money(t.Liquidity), money(t.Volume24), ageText(t.AgeHours), fmt.Sprintf("%+.1f%%", t.Change24)}
+		name := fmt.Sprintf("[%s] %s  %s", chainLabel(t.Chain), t.Symbol, t.Name)
+		security := t.Security
+		footnote := "合约 " + shortAddr(t.Address)
+		if !t.PotentialEligible {
+			name = "【审查】" + name
+			security = "只读 · " + t.Security
+			footnote = "审查原因：" + radarReviewReason(t) + " · 合约 " + shortAddr(t.Address)
+		}
+		vals := []string{strconv.Itoa(t.Score), name, security, money(t.Liquidity), money(t.Volume24), ageText(t.AgeHours), fmt.Sprintf("%+.1f%%", t.Change24)}
 		x := rr.Left
 		for j, v := range vals {
 			cw := int32(float64(width(rr)) * fracs[j])
@@ -1443,6 +1478,9 @@ func drawRows(dc HDC, l layout) {
 					tc = col.red
 				}
 			}
+			if !t.PotentialEligible && (j == 1 || j == 2) {
+				tc = col.yellow
+			}
 			align := uint32(DT_CENTER)
 			if j == 1 {
 				align = DT_LEFT
@@ -1451,7 +1489,7 @@ func drawRows(dc HDC, l layout) {
 			x += cw
 		}
 		chartR, chainR := radarRowLinkRects(l, row)
-		text(dc, "合约 "+shortAddr(t.Address), rect(rr.Left+s(12), rr.Top+s(42), width(rr)-s(250), s(22)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		text(dc, footnote, rect(rr.Left+s(12), rr.Top+s(42), width(rr)-s(250), s(22)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 		text(dc, "原始走势 ↗", chartR, fnts.small, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 		text(dc, "中文资料 ↗", chainR, fnts.small, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 		y += rowH
@@ -1545,7 +1583,11 @@ func drawDetails(dc HDC, r RECT) {
 		roundRect(dc, scoreR, rgb(9, 29, 48), sc, s(8))
 		text(dc, strconv.Itoa(t.Score), scoreR, fnts.number, sc, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 		text(dc, t.Grade, rect(scoreR.Right+s(12), y, width(body)-s(104), s(25)), fnts.body, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-		text(dc, t.Security, rect(scoreR.Right+s(12), y+s(27), width(body)-s(104), s(23)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		stageText := t.Security
+		if !t.PotentialEligible {
+			stageText = "只读审查 · " + radarReviewReason(t)
+		}
+		text(dc, stageText, rect(scoreR.Right+s(12), y+s(27), width(body)-s(104), s(23)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 		y += s(64)
 
 		leftX := body.Left + s(10)
@@ -1562,6 +1604,9 @@ func drawDetails(dc HDC, r RECT) {
 			{fmt.Sprintf("池龄：%s", ageText(t.AgeHours)), fmt.Sprintf("24H涨跌：%+.1f%%", t.Change24)},
 			{fmt.Sprintf("买/卖：%d / %d", t.Buys24, t.Sells24), fmt.Sprintf("来源：%s", t.Source)},
 			{"数据更新：" + dataFreshness(t.UpdatedAt), blockText},
+		}
+		if !t.PotentialEligible {
+			metrics = append(metrics, [2]string{"交易状态：只读审查，禁止模拟买入", "拦截原因：" + radarReviewReason(t)})
 		}
 		if t.TaxKnown {
 			metrics = append(metrics, [2]string{fmt.Sprintf("买入税：%.1f%%", t.BuyTaxPct), fmt.Sprintf("卖出税：%.1f%%", t.SellTaxPct)})
@@ -1797,7 +1842,7 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		loadSimState()
 		loadPreferences()
 		app.monitor = loadMonitorState()
-		addLog("V2.15 已启动：候选漏斗、LP/创建者风险快照与淘汰复盘已启用；保持本地模拟，不连接钱包")
+		addLog("V2.16 已启动：严格信号与只读审查队列已启用；审查项不可模拟买入，不连接钱包")
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
 		return 0
@@ -4241,7 +4286,10 @@ func selectedPositionValid() bool {
 }
 
 func manualSimBuy() {
-	if app.selected < 0 || app.selected >= len(app.results) {
+	if !canManualSimBuy() {
+		app.toast = "仅严格信号可模拟买入；审查队列只可查看"
+		app.toastUntil = time.Now().Add(4 * time.Second)
+		invalidate(false)
 		return
 	}
 	t := app.results[app.selected]
@@ -4499,7 +4547,7 @@ func addLog(s string) {
 	if len(app.logs) > 100 {
 		app.logs = app.logs[len(app.logs)-100:]
 	}
-	logPath := filepath.Join(dataDir(), "runtime_v215.log")
+	logPath := filepath.Join(dataDir(), "runtime_v216.log")
 	rotateRuntimeLog(logPath)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
@@ -4752,8 +4800,8 @@ func main() {
 	// Per-monitor v2 DPI awareness. -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
-	className := utf16Ptr("MultiChainTokenRadarV215Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.15 · 候选漏斗、风险快照与模拟复盘")
+	className := utf16Ptr("MultiChainTokenRadarV216Window")
+	title := utf16Ptr("Multi-Chain Token Radar V2.16 · 严格信号与只读审查队列")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {

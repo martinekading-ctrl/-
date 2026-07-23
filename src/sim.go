@@ -563,6 +563,9 @@ func (s *SimState) Buy(q SimQuote, amount float64, reason string, now time.Time)
 	s.Normalize()
 	q.Chain = normalizeChain(q.Chain)
 	q.Address = normalizeAddress(q.Address)
+	if !q.PotentialEligible {
+		return SimPosition{}, errors.New("未通过严格市场首发资格，审查队列不可模拟开仓")
+	}
 	if q.Address == "" || q.Price <= 0 {
 		return SimPosition{}, errors.New("当前没有可用价格")
 	}

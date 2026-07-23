@@ -32,6 +32,18 @@ func TestBuyAndManualSellIncludeCosts(t *testing.T) {
 	}
 }
 
+func TestBuyRejectsReadOnlyReviewCandidate(t *testing.T) {
+	s := NewSimState()
+	q := testQuote(1)
+	q.PotentialEligible = false
+	if _, err := s.Buy(q, 5, "manual", time.Now()); err == nil {
+		t.Fatal("read-only review candidate must never open a paper position")
+	}
+	if len(s.Positions) != 0 {
+		t.Fatal("rejected buy must not create a position")
+	}
+}
+
 func TestStopLossClosesPosition(t *testing.T) {
 	s := NewSimState()
 	now := time.Now()

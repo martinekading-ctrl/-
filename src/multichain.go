@@ -652,62 +652,66 @@ func fetchSecurityForChain(ctx context.Context, m chainModule, addresses []strin
 }
 
 func topMultiDisplay(cache map[string]Token, limit int) []Token {
-	rows := make([]Token, 0, len(cache))
+	if limit <= 0 {
+		return nil
+	}
+	strict := make([]Token, 0, len(cache))
+	review := make([]Token, 0, len(cache))
+	now := time.Now()
 	for _, t := range cache {
-		// The radar surface is deliberately a strict research queue, not a dump
-		// of every newly-created pool. Rejected/awaiting candidates stay in the
-		// local cache for re-evaluation but cannot reach paper trading.
 		if t.PotentialEligible {
-			rows = append(rows, t)
+			strict = append(strict, t)
+			continue
+		}
+		// A strict signal must never be fabricated just to keep the screen busy.
+		// Still, showing a compact, recent review queue lets the operator inspect
+		// why a fresh candidate was held or rejected.  These rows remain read-only:
+		// PotentialEligible is carried into SimQuote and is required by every buy
+		// path.
+		if !t.UpdatedAt.IsZero() && now.Sub(t.UpdatedAt) <= 6*time.Hour && t.PotentialStage != "" {
+			review = append(review, t)
 		}
 	}
-	sort.SliceStable(rows, func(i, j int) bool {
-		if rows[i].Score == rows[j].Score {
-			return rows[i].UpdatedAt.After(rows[j].UpdatedAt)
+	sort.SliceStable(strict, func(i, j int) bool {
+		if strict[i].Score == strict[j].Score {
+			return strict[i].UpdatedAt.After(strict[j].UpdatedAt)
 		}
-		return rows[i].Score > rows[j].Score
+		return strict[i].Score > strict[j].Score
 	})
-	if len(rows) <= limit {
-		return rows
-	}
-	chosen := []Token{}
-	seen := map[string]bool{}
-	// Guarantee up to ten recent rows from each chain, then fill by score.
-	for _, m := range chainModules {
-		chainRows := []Token{}
-		for _, t := range rows {
-			if normalizeChain(t.Chain) == m.Key {
-				chainRows = append(chainRows, t)
-			}
+	sort.SliceStable(review, func(i, j int) bool {
+		// Candidates waiting for an exact-market index are useful to revisit first;
+		// all remaining rows are ordered by freshness, then by their research score.
+		iWait := strings.Contains(review[i].PotentialStage, "等待精确池索引")
+		jWait := strings.Contains(review[j].PotentialStage, "等待精确池索引")
+		if iWait != jWait {
+			return iWait
 		}
-		sort.Slice(chainRows, func(i, j int) bool { return chainRows[i].UpdatedAt.After(chainRows[j].UpdatedAt) })
-		if len(chainRows) > 10 {
-			chainRows = chainRows[:10]
+		if !review[i].UpdatedAt.Equal(review[j].UpdatedAt) {
+			return review[i].UpdatedAt.After(review[j].UpdatedAt)
 		}
-		for _, t := range chainRows {
-			k := tokenIdentity(t.Chain, t.Address)
-			if !seen[k] {
-				seen[k] = true
-				chosen = append(chosen, t)
-			}
-		}
-	}
-	for _, t := range rows {
-		if len(chosen) >= limit {
-			break
-		}
-		k := tokenIdentity(t.Chain, t.Address)
-		if !seen[k] {
-			seen[k] = true
-			chosen = append(chosen, t)
-		}
-	}
-	sort.SliceStable(chosen, func(i, j int) bool {
-		if chosen[i].Score == chosen[j].Score {
-			return chosen[i].UpdatedAt.After(chosen[j].UpdatedAt)
-		}
-		return chosen[i].Score > chosen[j].Score
+		return review[i].Score > review[j].Score
 	})
+
+	// Keep the actionable layer first.  The read-only layer is deliberately
+	// capped so a burst of rejected pools cannot bury a real strict signal.
+	chosen := append([]Token{}, strict...)
+	if len(chosen) > limit {
+		return chosen[:limit]
+	}
+	reviewCap := 30
+	if len(strict) > 0 {
+		reviewCap = 12
+	}
+	remaining := limit - len(chosen)
+	if reviewCap < remaining {
+		remaining = reviewCap
+	}
+	if remaining > len(review) {
+		remaining = len(review)
+	}
+	if remaining > 0 {
+		chosen = append(chosen, review[:remaining]...)
+	}
 	return chosen
 }
 

@@ -122,14 +122,19 @@ func TestStrictMarketFirstQualification(t *testing.T) {
 	}
 }
 
-func TestTopMultiDisplayOnlyShowsStrictCandidates(t *testing.T) {
+func TestTopMultiDisplayShowsStrictThenRecentReadOnlyReview(t *testing.T) {
+	now := time.Now()
 	cache := map[string]Token{
-		"base|old":    {Chain: "base", Address: "old", Score: 99},
-		"base|strict": {Chain: "base", Address: "strict", Score: 20, PotentialEligible: true},
+		"base|strict": {Chain: "base", Address: "strict", Score: 20, PotentialEligible: true, UpdatedAt: now},
+		"base|review": {Chain: "base", Address: "review", Score: 99, PotentialStage: "淘汰：流动性不足", UpdatedAt: now},
+		"base|stale":  {Chain: "base", Address: "stale", Score: 99, PotentialStage: "淘汰：旧缓存", UpdatedAt: now.Add(-7 * time.Hour)},
 	}
 	rows := topMultiDisplay(cache, 100)
-	if len(rows) != 1 || rows[0].Address != "strict" {
-		t.Fatalf("radar must hide unqualified cache rows: %+v", rows)
+	if len(rows) != 2 || rows[0].Address != "strict" || rows[1].Address != "review" {
+		t.Fatalf("strict signal must precede a recent read-only review row: %+v", rows)
+	}
+	if rows[1].PotentialEligible {
+		t.Fatal("review row must stay ineligible for every trade path")
 	}
 }
 

@@ -1,6 +1,6 @@
-# Multi-Chain Token Radar V2.15
+# Multi-Chain Token Radar V2.16
 
-V2.15 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
+V2.16 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
 Polygon, and Arbitrum. Its
 current workflow is:
 
@@ -14,6 +14,24 @@ current workflow is:
 The application does not connect to a wallet, store private keys, sign orders,
 or submit real transactions. A profitable paper result is not a promise of
 future or live-trading profit.
+
+## V2.16 strict signals and a read-only review queue
+
+- The radar is no longer blank merely because no token has cleared every
+  trading gate. It presents two explicitly separate layers: **strict signals**
+  first and a compact **read-only review queue** beneath them.
+- A strict signal is still the only row that can start a manual or automatic
+  paper position. A review row has `PotentialEligible=false`, is visibly
+  labelled `【审查】`, displays the precise hold/rejection stage, and is rejected
+  by every paper-buy and shadow-sample path.
+- The review queue retains only recent, explicitly staged candidates (up to 30
+  when there are no strict signals, or 12 alongside strict signals). It exists
+  for inspecting a contract and its chart, not for relaxing entry rules or
+  creating activity for its own sake. Expired cache entries remain hidden.
+- The radar cards separately report strict signals, candidates awaiting exact
+  market indexing, review rows, and the full local candidate cache. Thus
+  `严格信号 = 0` means “do not trade”, while a nonzero review queue means the
+  scanner is still collecting auditable evidence.
 
 ## V2.15 candidate funnel, risk snapshots, and review lane
 
@@ -56,11 +74,12 @@ pass every public-data gate below:
    flag; buy/sell tax is known and at most 5%; creator/owner share is at most
    20%; and at least 20 holders are reported.
 
-Candidates waiting for indexing or failing any one gate are retained only in
-the local re-check cache; they do not appear in the radar and cannot start a
-paper trade or shadow sample. The no-earlier-pool check is a **market-first
-proxy**, not proof of a contract's original deployment time. It is designed to
-exclude the practical failure mode where an old token opens a fresh pool.
+Candidates waiting for indexing or failing any one gate are retained in the
+local re-check cache and may appear as visibly read-only review rows with their
+specific reason. They cannot start a paper trade or shadow sample. The
+no-earlier-pool check is a **market-first proxy**, not proof of a contract's
+original deployment time. It is designed to exclude the practical failure mode
+where an old token opens a fresh pool.
 
 The 1-hour buy/sell figures are public aggregate transaction counts, not proof
 that each buy came from an independent wallet. The application remains
