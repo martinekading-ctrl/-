@@ -266,10 +266,17 @@ type Token struct {
 	Price             float64   `json:"price"`
 	Liquidity         float64   `json:"liquidity"`
 	Volume24          float64   `json:"volume24"`
+	VolumeM5          float64   `json:"volume_m5"`
 	AgeHours          float64   `json:"age_hours"`
 	Change24          float64   `json:"change24"`
+	ChangeM5          float64   `json:"change_m5"`
 	Buys24            int       `json:"buys24"`
 	Sells24           int       `json:"sells24"`
+	BuysM5            int       `json:"buys_m5"`
+	SellsM5           int       `json:"sells_m5"`
+	FDV               float64   `json:"fdv"`
+	MarketCap         float64   `json:"market_cap"`
+	SignalScore       int       `json:"signal_score"`
 	BuyTaxPct         float64   `json:"buy_tax_pct"`
 	SellTaxPct        float64   `json:"sell_tax_pct"`
 	TaxKnown          bool      `json:"tax_known"`
@@ -985,7 +992,7 @@ func drawCommonHeader(dc HDC, l layout, subtitle string) {
 }
 
 func drawSimUI(dc HDC, l layout) {
-	drawCommonHeader(dc, l, "V2.19 精确池报价保护 · $1,000 策略验证 · 不连接钱包")
+	drawCommonHeader(dc, l, "V2.20 证据化新池研究 · $1,000 策略验证 · 不连接钱包")
 	if app.sim == nil {
 		app.sim = NewSimState()
 	}
@@ -1310,7 +1317,7 @@ func drawRadarUI(dc HDC, l layout) {
 		knobX = sw.Right - s(17)
 	}
 	ellipse(dc, rect(knobX, sw.Top+s(3), s(14), s(14)), col.text, col.text)
-	text(dc, "5秒实时监控", rect(sw.Right+s(10), ar.Top, ar.Right-sw.Right-s(18), height(ar)), fnts.small, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, "最快5秒发起下一轮", rect(sw.Right+s(10), ar.Top, ar.Right-sw.Right-s(18), height(ar)), fnts.small, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	// Cards. Strict signals and read-only review rows are intentionally counted
 	// separately: a non-empty screen must never imply that an order is allowed.
 	strictRows, reviewRows := radarLayerCounts(app.results)
@@ -1725,7 +1732,7 @@ func drawModal(dc HDC, l layout) {
 	if app.modal == 1 {
 		text(dc, "程序说明", rect(r.Left+s(30), r.Top+s(24), width(r)-s(100), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 		body := "怎么使用\n" +
-			"1. 程序默认每 5 秒增量检查 ETH、Base、BSC、Optimism、Polygon、Arbitrum 新区块；也可以点‘立即扫描’手动刷新。\n" +
+			"1. 程序默认在上一轮结束后最快 5 秒发起下一次增量检查；实际间隔取决于 RPC、DEX 与安全接口耗时。监控 ETH、Base、BSC、Optimism、Polygon、Arbitrum 新区块，也可以点‘立即扫描’手动刷新。\n" +
 			"2. 每个候选最右侧都有‘原始走势’和‘中文资料’链接；详情页优先打开简体中文代币资料，展开后仍可打开原始走势和区块浏览器。\n" +
 			"3. 切换到‘模拟盘’，查看持仓、净盈亏、止损止盈和交易记录。\n" +
 			"4. 在候选列表内滚动可逐行浏览代币；在右侧或空白处滚动可下拉整个页面；点击‘展开’查看完整详情。\n" +
@@ -1754,7 +1761,7 @@ func expandedDetailBody(l layout) RECT {
 }
 
 func expandedDetailContentHeight(t Token) int32 {
-	return s(482) + int32(len(t.Evidence))*s(48)
+	return s(542) + int32(len(t.Evidence))*s(48)
 }
 
 func clampDetailScroll(l layout) {
@@ -1812,7 +1819,9 @@ func drawExpandedDetails(dc HDC, l layout) {
 			{fmt.Sprintf("质量分：%d · %s", t.Score, t.Grade), "安全状态：" + t.Security},
 			{"价格：" + price(t.Price), "流动性：" + money(t.Liquidity)},
 			{"24H成交：" + money(t.Volume24), fmt.Sprintf("24H涨跌：%+.1f%%", t.Change24)},
-			{"池龄：" + ageText(t.AgeHours), fmt.Sprintf("买/卖：%d / %d", t.Buys24, t.Sells24)},
+			{"近5分成交：" + money(t.VolumeM5), fmt.Sprintf("近5分买/卖：%d / %d", t.BuysM5, t.SellsM5)},
+			{"池龄：" + ageText(t.AgeHours), fmt.Sprintf("早期动能证据：%d/100", t.SignalScore)},
+			{"FDV：" + money(t.FDV), fmt.Sprintf("买/卖（24H）：%d / %d", t.Buys24, t.Sells24)},
 			{"数据更新：" + dataFreshness(t.UpdatedAt), "数据来源：" + t.Source},
 		}
 		for _, pair := range metrics {
@@ -1869,7 +1878,7 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		loadSimState()
 		loadPreferences()
 		app.monitor = loadMonitorState()
-		addLog("V2.19 已启动：精确池报价保护与严格安全门槛已启用；审查项不可模拟买入，不连接钱包")
+		addLog("V2.20 已启动：精确池保护、严格安全门槛、数据退避和策略指纹已启用；不连接钱包")
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
 		return 0
@@ -2526,7 +2535,7 @@ func finishScan() {
 		l := buildLayout()
 		clampListPage(l)
 		selectFirstVisible(l)
-		app.status = fmt.Sprintf("多链监控正常 %d/%d · 严格通过 %d / 等待索引 %d / 淘汰 %d", app.activeChains, len(chainModules), app.strictQualified, app.strictAwaiting, app.strictRejected)
+		app.status = fmt.Sprintf("多链监控正常 %d/%d · 严格通过 %d / 等待索引 %d / 淘汰 %d · 本轮 %.1fs", app.activeChains, len(chainModules), app.strictQualified, app.strictAwaiting, app.strictRejected, app.lastScanDuration.Seconds())
 		app.statusKind = 1
 		for _, alert := range out.stats.StageAlerts {
 			addLog("候选漏斗：" + alert)
@@ -3473,9 +3482,13 @@ type dexPair struct {
 		USD float64 `json:"usd"`
 	} `json:"liquidity"`
 	Volume struct {
+		M5  float64 `json:"m5"`
+		H1  float64 `json:"h1"`
 		H24 float64 `json:"h24"`
 	} `json:"volume"`
 	PriceChange struct {
+		M5  float64 `json:"m5"`
+		H1  float64 `json:"h1"`
 		H24 float64 `json:"h24"`
 	} `json:"priceChange"`
 	Txns struct {
@@ -3483,7 +3496,9 @@ type dexPair struct {
 		H1  struct{ Buys, Sells int } `json:"h1"`
 		H24 struct{ Buys, Sells int } `json:"h24"`
 	} `json:"txns"`
-	Info struct {
+	FDV       float64 `json:"fdv"`
+	MarketCap float64 `json:"marketCap"`
+	Info      struct {
 		Websites []struct {
 			URL string `json:"url"`
 		} `json:"websites"`
@@ -3975,6 +3990,63 @@ func lpLockPercent(sec map[string]any) (locked float64, known bool) {
 	return locked, known
 }
 
+// earlyMomentumEvidence is deliberately separate from the safety/quality score.
+// It summarizes only observable five-minute market activity; it is not a claim
+// that a token has intrinsic value or that a move will continue.
+func earlyMomentumEvidence(p dexPair) (int, []string) {
+	buys, sells := p.Txns.M5.Buys, p.Txns.M5.Sells
+	total := buys + sells
+	if total == 0 {
+		return 0, []string{"近 5 分钟尚无可核验交易活动；不把静态资料误当成早期动能"}
+	}
+	score := 0
+	evidence := []string{fmt.Sprintf("近 5 分钟交易：买 %d / 卖 %d，成交 %s", buys, sells, money(p.Volume.M5))}
+	switch {
+	case total >= 12:
+		score += 25
+	case total >= 6:
+		score += 18
+	case total >= 3:
+		score += 10
+	default:
+		score += 4
+	}
+	if buys >= 3 && buys >= sells*2 {
+		score += 25
+		evidence = append(evidence, "近 5 分钟买入笔数占优")
+	} else if sells > buys {
+		score -= 12
+		evidence = append(evidence, "近 5 分钟卖出笔数占优，动能不足")
+	}
+	if p.Liquidity.USD > 0 && p.Volume.M5 > 0 {
+		turnover := p.Volume.M5 / p.Liquidity.USD
+		switch {
+		case turnover >= 0.01 && turnover <= 0.30:
+			score += 25
+			evidence = append(evidence, fmt.Sprintf("近 5 分钟成交/流动性 %.2f，处于可观察区间", turnover))
+		case turnover > 0.60:
+			score -= 10
+			evidence = append(evidence, fmt.Sprintf("近 5 分钟成交/流动性 %.2f 过高，需排查刷量或剧烈换手", turnover))
+		default:
+			evidence = append(evidence, fmt.Sprintf("近 5 分钟成交/流动性 %.2f", turnover))
+		}
+	}
+	if math.Abs(p.PriceChange.M5) <= 20 {
+		score += 15
+		evidence = append(evidence, fmt.Sprintf("近 5 分钟价格变动 %+.1f%%，未出现极端跳变", p.PriceChange.M5))
+	} else if math.Abs(p.PriceChange.M5) > 40 {
+		score -= 15
+		evidence = append(evidence, fmt.Sprintf("近 5 分钟价格变动 %+.1f%% 过大，不宜追价", p.PriceChange.M5))
+	}
+	if score < 0 {
+		score = 0
+	}
+	if score > 100 {
+		score = 100
+	}
+	return score, evidence
+}
+
 func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 	priceV := fnum(p.PriceUSD)
 	age := 0.0
@@ -3986,6 +4058,8 @@ func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 	}
 	score := 0
 	ev := []string{"质量分用于筛选与排雷，不是自动买入信号"}
+	momentumScore, momentumEvidence := earlyMomentumEvidence(p)
+	ev = append(ev, momentumEvidence...)
 	severe := false
 	securityCap := 100
 
@@ -4230,8 +4304,9 @@ func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 	return Token{
 		Score: score, Grade: grade, Name: p.BaseToken.Name, Symbol: p.BaseToken.Symbol,
 		Address: strings.ToLower(p.BaseToken.Address), Price: priceV, Liquidity: p.Liquidity.USD,
-		Volume24: p.Volume.H24, AgeHours: age, Change24: p.PriceChange.H24,
-		Buys24: p.Txns.H24.Buys, Sells24: p.Txns.H24.Sells,
+		Volume24: p.Volume.H24, VolumeM5: p.Volume.M5, AgeHours: age, Change24: p.PriceChange.H24, ChangeM5: p.PriceChange.M5,
+		Buys24: p.Txns.H24.Buys, Sells24: p.Txns.H24.Sells, BuysM5: p.Txns.M5.Buys, SellsM5: p.Txns.M5.Sells,
+		FDV: p.FDV, MarketCap: p.MarketCap, SignalScore: momentumScore,
 		BuyTaxPct: buyTaxPct, SellTaxPct: sellTaxPct, TaxKnown: taxKnown,
 		LPLockPct: lpLockPct, LPLockKnown: lpLockKnown, CreatorAddress: creatorAddress, CreatorPercent: creatorPct,
 		TopHolderPercent: topHolderPct, HolderCount: holderCount, RiskCheckedAt: time.Now(),
@@ -4300,7 +4375,7 @@ func tokensToQuotes(tokens []Token, now time.Time) []SimQuote {
 		if quoteTime.IsZero() {
 			quoteTime = now
 		}
-		out = append(out, SimQuote{Chain: t.Chain, Address: t.Address, PoolAddress: t.PoolAddress, Symbol: t.Symbol, Name: t.Name, Price: t.Price, Liquidity: t.Liquidity, BuyTaxPct: t.BuyTaxPct, SellTaxPct: t.SellTaxPct, TaxKnown: t.TaxKnown, Score: t.Score, Security: t.Security, PotentialEligible: t.PotentialEligible, Buys: t.Buys24, Sells: t.Sells24, Volume24: t.Volume24, AgeHours: t.AgeHours, Source: t.Source, Time: quoteTime})
+		out = append(out, SimQuote{Chain: t.Chain, Address: t.Address, PoolAddress: t.PoolAddress, Symbol: t.Symbol, Name: t.Name, Price: t.Price, Liquidity: t.Liquidity, BuyTaxPct: t.BuyTaxPct, SellTaxPct: t.SellTaxPct, TaxKnown: t.TaxKnown, Score: t.Score, SignalScore: t.SignalScore, Security: t.Security, PotentialEligible: t.PotentialEligible, Buys: t.Buys24, Sells: t.Sells24, Volume24: t.Volume24, AgeHours: t.AgeHours, Source: t.Source, Time: quoteTime})
 	}
 	return out
 }
@@ -4638,7 +4713,7 @@ func statusBarText() string {
 	if app.statusKind == 3 {
 		return "部分链或补充接口暂不可用，已保留上次结果；请使用连接诊断。"
 	}
-	return "就绪 · 5秒实时监控；模拟盘不连接钱包、不发送真实交易。"
+	return "就绪 · 上一轮结束后最快5秒检查；模拟盘不连接钱包、不发送真实交易。"
 }
 func onOff(b bool) string {
 	if b {
@@ -4851,7 +4926,7 @@ func main() {
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
 	className := utf16Ptr("MultiChainTokenRadarV218Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.19 · 精确池报价保护与策略验证")
+	title := utf16Ptr("Multi-Chain Token Radar V2.20 · 证据化新池研究与策略验证")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {

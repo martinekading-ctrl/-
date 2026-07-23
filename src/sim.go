@@ -65,6 +65,7 @@ type SimQuote struct {
 	SellTaxPct        float64   `json:"sell_tax_pct"`
 	TaxKnown          bool      `json:"tax_known"`
 	Score             int       `json:"score"`
+	SignalScore       int       `json:"signal_score"`
 	Security          string    `json:"security"`
 	PotentialEligible bool      `json:"potential_eligible"`
 	Buys              int       `json:"buys"`
@@ -101,6 +102,7 @@ type SimPosition struct {
 	BuyTaxPct        float64   `json:"buy_tax_pct"`
 	SellTaxPct       float64   `json:"sell_tax_pct"`
 	EntryScore       int       `json:"entry_score"`
+	EntrySignalScore int       `json:"entry_signal_score"`
 	EntrySecurity    string    `json:"entry_security"`
 	LastQuoteAt      time.Time `json:"last_quote_at"`
 	// QuoteInterruptedAt is non-zero when the scanner can no longer provide a
@@ -116,29 +118,31 @@ type SimPosition struct {
 	// ValidationEligible is false for positions that existed before the
 	// quote-integrity model. Their later closes remain visible, but cannot be
 	// used as evidence that the hardened strategy works.
-	ValidationEligible bool `json:"validation_eligible"`
+	ValidationEligible  bool   `json:"validation_eligible"`
+	StrategyFingerprint string `json:"strategy_fingerprint,omitempty"`
 }
 
 type SimTrade struct {
-	ID                 int64     `json:"id"`
-	Chain              string    `json:"chain"`
-	PositionID         int64     `json:"position_id"`
-	Address            string    `json:"address"`
-	Symbol             string    `json:"symbol"`
-	Quantity           float64   `json:"quantity"`
-	EntryPrice         float64   `json:"entry_price"`
-	ExitPrice          float64   `json:"exit_price"`
-	CostAllocated      float64   `json:"cost_allocated"`
-	NetProceeds        float64   `json:"net_proceeds"`
-	Fees               float64   `json:"fees"`
-	PnL                float64   `json:"pnl"`
-	PnLPct             float64   `json:"pnl_pct"`
-	OpenedAt           time.Time `json:"opened_at"`
-	ClosedAt           time.Time `json:"closed_at"`
-	Reason             string    `json:"reason"`
-	Automated          bool      `json:"automated"`
-	Exploratory        bool      `json:"exploratory"`
-	ValidationEligible bool      `json:"validation_eligible"`
+	ID                  int64     `json:"id"`
+	Chain               string    `json:"chain"`
+	PositionID          int64     `json:"position_id"`
+	Address             string    `json:"address"`
+	Symbol              string    `json:"symbol"`
+	Quantity            float64   `json:"quantity"`
+	EntryPrice          float64   `json:"entry_price"`
+	ExitPrice           float64   `json:"exit_price"`
+	CostAllocated       float64   `json:"cost_allocated"`
+	NetProceeds         float64   `json:"net_proceeds"`
+	Fees                float64   `json:"fees"`
+	PnL                 float64   `json:"pnl"`
+	PnLPct              float64   `json:"pnl_pct"`
+	OpenedAt            time.Time `json:"opened_at"`
+	ClosedAt            time.Time `json:"closed_at"`
+	Reason              string    `json:"reason"`
+	Automated           bool      `json:"automated"`
+	Exploratory         bool      `json:"exploratory"`
+	ValidationEligible  bool      `json:"validation_eligible"`
+	StrategyFingerprint string    `json:"strategy_fingerprint,omitempty"`
 }
 
 // ShadowSample tracks a near-miss without reserving paper cash. It is research
@@ -275,7 +279,7 @@ type SimState struct {
 func NewSimState() *SimState {
 	cfg := DefaultSimConfig()
 	return &SimState{
-		Version: 5, Config: cfg, Cash: cfg.InitialCash, Snapshots: map[string][]PriceSnapshot{},
+		Version: 6, Config: cfg, Cash: cfg.InitialCash, Snapshots: map[string][]PriceSnapshot{},
 		// Automatic paper trading is opt-in. A new installation must first collect
 		// enough fresh, exact-pool observations for the selected candidate.
 		AutoEnabled: false, NextID: 1, EquityPeak: cfg.InitialCash,
@@ -448,6 +452,19 @@ func (s *SimState) Normalize() {
 			}
 		}
 	}
+	if oldVersion < 6 {
+		// V2.20 freezes the strategy definition per position. Results created
+		// before this marker cannot be mixed with later parameter sets, because
+		// that would manufacture a misleading validation record.
+		s.Version = 6
+		s.AutoEnabled = false
+		for i := range s.Positions {
+			s.Positions[i].ValidationEligible = false
+		}
+		for i := range s.Trades {
+			s.Trades[i].ValidationEligible = false
+		}
+	}
 }
 
 func normalizeAddress(a string) string { return strings.ToLower(strings.TrimSpace(a)) }
@@ -552,9 +569,16 @@ func clamp(v, lo, hi float64) float64 {
 func (s *SimState) slippagePct(notional, liquidity float64) float64 {
 	impact := 0.0
 	if liquidity > 0 {
-		impact = notional / liquidity * 100
+		// Approximate a balanced constant-product pool. The executable side of a
+		// two-sided pool is roughly half of USD liquidity, so using total TVL
+		// understates average execution impact by about half. Concentrated
+		// liquidity and routing can be worse; BaseSlippagePct remains an explicit
+		// uncertainty buffer rather than a claim of an exact fill.
+		impact = notional / (liquidity / 2) * 100
+	} else {
+		impact = s.Config.MaxSlippagePct
 	}
-	return clamp(s.Config.BaseSlippagePct+impact, s.Config.BaseSlippagePct, s.Config.MaxSlippagePct)
+	return math.Max(s.Config.BaseSlippagePct, s.Config.BaseSlippagePct+impact)
 }
 
 func (s *SimState) AddSnapshots(quotes []SimQuote, now time.Time) {
@@ -652,6 +676,9 @@ func (s *SimState) Buy(q SimQuote, amount float64, reason string, now time.Time)
 	}
 
 	slip := s.slippagePct(amount, q.Liquidity)
+	if slip > s.Config.MaxSlippagePct {
+		return SimPosition{}, fmt.Errorf("预估滑点 %.2f%% 超过模拟上限 %.2f%%，拒绝伪造成交", slip, s.Config.MaxSlippagePct)
+	}
 	fee := amount * s.Config.DexFeePct / 100
 	spendable := amount - fee - s.paperGasUSDC(q.Chain)
 	if spendable <= 0 {
@@ -669,9 +696,9 @@ func (s *SimState) Buy(q SimQuote, amount float64, reason string, now time.Time)
 		EntryCost: amount, RemainingCost: amount, EntryLiquidity: q.Liquidity,
 		CurrentPrice: q.Price, CurrentLiquidity: q.Liquidity,
 		HighestPrice: q.Price, LowestPrice: q.Price, BuyTaxPct: q.BuyTaxPct, SellTaxPct: q.SellTaxPct,
-		EntryScore: q.Score, EntrySecurity: q.Security, LastQuoteAt: q.Time,
+		EntryScore: q.Score, EntrySignalScore: q.SignalScore, EntrySecurity: q.Security, LastQuoteAt: q.Time,
 		OpenedAt: now, Automated: strings.HasPrefix(reason, "自动策略："), Exploratory: strings.Contains(reason, "探索档"), EntryReason: reason,
-		ValidationEligible: true,
+		ValidationEligible: true, StrategyFingerprint: s.strategyFingerprint(),
 	}
 	if p.LastQuoteAt.IsZero() {
 		p.LastQuoteAt = now
@@ -688,6 +715,13 @@ func (s *SimState) liquidationValue(p SimPosition, price, liquidity float64) (ne
 	}
 	notional := p.Quantity * price
 	slip := s.slippagePct(notional, liquidity)
+	if slip > s.Config.MaxSlippagePct {
+		// There is no honest way to mark an executable exit at a capped price when
+		// the estimated impact already exceeds the configured limit. Model it as
+		// zero recoverable value so paper validation is conservative, and let the
+		// visible exit reason make the liquidity failure auditable.
+		return 0, notional
+	}
 	tax := math.Max(p.SellTaxPct, 0)
 	afterImpact := notional * math.Max(0, 1-(slip+tax)/100)
 	dexFee := afterImpact * s.Config.DexFeePct / 100
@@ -755,7 +789,7 @@ func (s *SimState) Sell(positionID int64, fraction float64, q SimQuote, reason s
 		Quantity: qty, EntryPrice: p.EntryPrice, ExitPrice: q.Price,
 		CostAllocated: costAllocated, NetProceeds: net, Fees: fees,
 		PnL: pnl, PnLPct: pnlPct, OpenedAt: p.OpenedAt, ClosedAt: now, Reason: reason,
-		Automated: p.Automated, Exploratory: p.Exploratory, ValidationEligible: p.ValidationEligible,
+		Automated: p.Automated, Exploratory: p.Exploratory, ValidationEligible: p.ValidationEligible, StrategyFingerprint: p.StrategyFingerprint,
 	}
 	s.NextID++
 	s.Cash += net
@@ -859,7 +893,9 @@ func (s *SimState) Update(quotes []SimQuote, now time.Time) []string {
 		}
 		stopLoss, take1, take2, take3, trailing, maxHours, trailActivation := s.exitRules(p)
 		reason := ""
-		if q.Security == "严重风险" || q.Score <= 0 {
+		if s.slippagePct(p.Quantity*q.Price, q.Liquidity) > s.Config.MaxSlippagePct {
+			reason = fmt.Sprintf("流动性不足：预估卖出滑点超过 %.1f%%", s.Config.MaxSlippagePct)
+		} else if q.Security == "严重风险" || q.Score <= 0 {
 			reason = "安全状态恶化，紧急退出"
 		} else if p.EntryScore > 0 && q.Score > 0 && p.EntryScore-q.Score >= 20 {
 			reason = "质量分较入场下降 20 分"
@@ -1407,7 +1443,7 @@ func (s *SimState) quoteForPosition(p SimPosition, quotes []SimQuote) SimQuote {
 			return q
 		}
 	}
-	return SimQuote{Chain: p.Chain, Address: p.Address, PoolAddress: p.PoolAddress, Symbol: p.Symbol, Name: p.Name, Price: p.CurrentPrice, Liquidity: p.CurrentLiquidity, SellTaxPct: p.SellTaxPct, Time: time.Now()}
+	return SimQuote{Chain: p.Chain, Address: p.Address, PoolAddress: p.PoolAddress, Symbol: p.Symbol, Name: p.Name, Price: p.CurrentPrice, Liquidity: p.CurrentLiquidity, Score: p.EntryScore, SignalScore: p.EntrySignalScore, SellTaxPct: p.SellTaxPct, Time: time.Now()}
 }
 
 func (s *SimState) Metrics(quotes []SimQuote) SimMetrics {

@@ -43,6 +43,16 @@ func TestExpandedEVMChainRegistry(t *testing.T) {
 			}
 		}
 	}
+	arb, _ := chainByKey("arbitrum")
+	foundUniV3 := false
+	for _, f := range arb.Factories {
+		if f.Name == "Uniswap V3" && f.Address == uniswapV3Canonical {
+			foundUniV3 = true
+		}
+	}
+	if !foundUniV3 {
+		t.Fatal("Arbitrum must monitor Uniswap V3 alongside Pancake pools")
+	}
 }
 
 func TestConfirmedBlock(t *testing.T) {
@@ -196,6 +206,39 @@ func TestSecurityBackoffIsBoundedAndRecovers(t *testing.T) {
 	clearSecurityBackoff(chain)
 	if err := securityRequestAllowed(chain, now); err != nil {
 		t.Fatalf("cleared backoff should allow recovery: %v", err)
+	}
+}
+
+func TestMarketBackoffIsIndependentFromSecurityBackoff(t *testing.T) {
+	chain := "arbitrum"
+	clearMarketBackoff(chain)
+	clearSecurityBackoff(chain)
+	now := time.Now()
+	recordMarketFailure(chain, now, fmt.Errorf("dex unavailable"))
+	if err := marketRequestAllowed(chain, now.Add(10*time.Second)); err == nil {
+		t.Fatal("market request must be blocked during its own backoff")
+	}
+	if err := securityRequestAllowed(chain, now); err != nil {
+		t.Fatalf("market failure must not block security independently: %v", err)
+	}
+	clearMarketBackoff(chain)
+}
+
+func TestEarlyMomentumEvidenceUsesOnlyRecentObservableData(t *testing.T) {
+	p := strictTestPair("0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222", time.Now().UnixMilli())
+	if score, _ := earlyMomentumEvidence(p); score != 0 {
+		t.Fatalf("missing five-minute activity must not create momentum, got %d", score)
+	}
+	p.Txns.M5.Buys, p.Txns.M5.Sells = 8, 2
+	p.Volume.M5 = 500
+	p.PriceChange.M5 = 5
+	if score, evidence := earlyMomentumEvidence(p); score < 70 || len(evidence) < 3 {
+		t.Fatalf("observable balanced recent activity should produce explainable evidence: score=%d evidence=%v", score, evidence)
+	}
+	p.Txns.M5.Buys, p.Txns.M5.Sells = 1, 8
+	p.PriceChange.M5 = 55
+	if score, _ := earlyMomentumEvidence(p); score >= 40 {
+		t.Fatalf("sell-dominant extreme move must not look like strong momentum: score=%d", score)
 	}
 }
 

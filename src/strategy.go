@@ -35,14 +35,23 @@ type simPositionOutcome struct {
 	ClosedAt   time.Time
 }
 
+// strategyFingerprint makes validation fail closed when the operator changes a
+// meaningful rule mid-sample. It is deliberately readable in exported JSON so
+// results can be grouped and audited without treating a hash as magic.
+func (s *SimState) strategyFingerprint() string {
+	c := s.Config
+	return fmt.Sprintf("v2.20|profile=%d|size=%.2f|maxpos=%d|stop=%.2f|tp=%.2f/%.2f/%.2f|trail=%.2f/%.2f|liqdrop=%.2f|maxhours=%.2f|fee=%.3f|gas=%.3f|baseSlip=%.3f|maxSlip=%.2f|minScore=%d|minLiq=%.2f|maxTax=%.2f|observe=%.2f", s.AutoProfile, c.PositionSize, c.MaxPositions, c.StopLossPct, c.TakeProfit1Pct, c.TakeProfit2Pct, c.TakeProfit3Pct, c.TrailingStopPct, c.TrailActivationPct, c.LiquidityDropPct, c.MaxHoldingHours, c.DexFeePct, c.GasUSDC, c.BaseSlippagePct, c.MaxSlippagePct, c.MinScore, c.MinLiquidity, c.MaxTaxPct, c.ObserveMinutes)
+}
+
 func (s *SimState) automatedOutcomes() []simPositionOutcome {
 	open := make(map[int64]bool, len(s.Positions))
 	for _, p := range s.Positions {
 		open[p.ID] = true
 	}
 	byID := map[int64]simPositionOutcome{}
+	currentStrategy := s.strategyFingerprint()
 	for _, tr := range s.Trades {
-		if !tr.Automated || tr.Exploratory || !tr.ValidationEligible || open[tr.PositionID] {
+		if !tr.Automated || tr.Exploratory || !tr.ValidationEligible || tr.StrategyFingerprint != currentStrategy || open[tr.PositionID] {
 			continue
 		}
 		o := byID[tr.PositionID]

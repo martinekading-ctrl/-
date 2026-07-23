@@ -131,6 +131,7 @@ var chainModules = []chainModule{
 		Key: "arbitrum", Name: "Arbitrum One", Short: "ARB", ChainID: "42161", DexSlug: "arbitrum", EnvRPC: "ARBITRUM_RPC_URL",
 		RPCs: []string{"https://arb1.arbitrum.io/rpc", "https://arbitrum-one-rpc.publicnode.com"},
 		Factories: []factorySpec{
+			{Name: "Uniswap V3", Address: uniswapV3Canonical, Topic: topicUniswapV3PoolCreated, Kind: "v3"},
 			{Name: "Pancake V2", Address: pancakeV2EVM, Topic: topicUniswapV2PairCreated, Kind: "v2"},
 			{Name: "Pancake V3", Address: pancakeV3EVM, Topic: topicUniswapV3PoolCreated, Kind: "v3"},
 		},
@@ -620,6 +621,12 @@ type securityBackoffState struct {
 var securityBackoffMu sync.Mutex
 var securityBackoffs = map[string]securityBackoffState{}
 
+// DEX Screener is a separate public dependency. Keeping an independent
+// backoff prevents a transient market-data outage from amplifying into a burst
+// of requests while security data remains available for other chains.
+var marketBackoffMu sync.Mutex
+var marketBackoffs = map[string]securityBackoffState{}
+
 func securityBackoffDuration(failures int) time.Duration {
 	if failures <= 0 {
 		return 0
@@ -659,6 +666,33 @@ func clearSecurityBackoff(chain string) {
 	securityBackoffMu.Lock()
 	delete(securityBackoffs, normalizeChain(chain))
 	securityBackoffMu.Unlock()
+}
+
+func marketRequestAllowed(chain string, now time.Time) error {
+	marketBackoffMu.Lock()
+	defer marketBackoffMu.Unlock()
+	b := marketBackoffs[normalizeChain(chain)]
+	if now.Before(b.Until) {
+		return fmt.Errorf("DEX 市场接口退避中，%.0f 分钟后重试：%s", math.Ceil(b.Until.Sub(now).Minutes()), b.LastErr)
+	}
+	return nil
+}
+
+func recordMarketFailure(chain string, now time.Time, err error) {
+	marketBackoffMu.Lock()
+	defer marketBackoffMu.Unlock()
+	key := normalizeChain(chain)
+	b := marketBackoffs[key]
+	b.Failures++
+	b.LastErr = shortErr(err)
+	b.Until = now.Add(securityBackoffDuration(b.Failures))
+	marketBackoffs[key] = b
+}
+
+func clearMarketBackoff(chain string) {
+	marketBackoffMu.Lock()
+	delete(marketBackoffs, normalizeChain(chain))
+	marketBackoffMu.Unlock()
 }
 
 func fetchSecurityForChain(ctx context.Context, m chainModule, addresses []string) (map[string]map[string]any, error) {
@@ -1145,10 +1179,16 @@ func multiScanMarket(ctx context.Context, heldRefs []multiCandidate) ([]Token, [
 			}
 			var pairs []dexPair
 			u := "https://api.dexscreener.com/tokens/v1/" + m.DexSlug + "/" + strings.Join(addresses[i:j], ",")
+			if e := marketRequestAllowed(m.Key, time.Now()); e != nil {
+				logs = append(logs, m.Short+" DEX市场数据暂不可用："+shortErr(e))
+				break
+			}
 			if e := getJSON(ctx, u, &pairs); e != nil {
+				recordMarketFailure(m.Key, time.Now(), e)
 				logs = append(logs, m.Short+" DEX补充失败："+shortErr(e))
 				break
 			}
+			clearMarketBackoff(m.Key)
 			for _, p := range pairs {
 				baseAddr := strings.ToLower(p.BaseToken.Address)
 				quoteAddr := strings.ToLower(p.QuoteToken.Address)

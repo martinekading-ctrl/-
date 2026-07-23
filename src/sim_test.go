@@ -213,10 +213,11 @@ func TestValidationGroupsPartialExitsByCompletePosition(t *testing.T) {
 	s.Config.MinValidationTrades = 2
 	s.MaxDrawdown = 5
 	now := time.Now()
+	fingerprint := s.strategyFingerprint()
 	s.Trades = []SimTrade{
-		{PositionID: 10, PnL: 0.30, CostAllocated: 2.5, ClosedAt: now.Add(-3 * time.Minute), Automated: true, ValidationEligible: true},
-		{PositionID: 10, PnL: 0.20, CostAllocated: 2.5, ClosedAt: now.Add(-2 * time.Minute), Automated: true, ValidationEligible: true},
-		{PositionID: 11, PnL: -0.25, CostAllocated: 5, ClosedAt: now.Add(-time.Minute), Automated: true, ValidationEligible: true},
+		{PositionID: 10, PnL: 0.30, CostAllocated: 2.5, ClosedAt: now.Add(-3 * time.Minute), Automated: true, ValidationEligible: true, StrategyFingerprint: fingerprint},
+		{PositionID: 10, PnL: 0.20, CostAllocated: 2.5, ClosedAt: now.Add(-2 * time.Minute), Automated: true, ValidationEligible: true, StrategyFingerprint: fingerprint},
+		{PositionID: 11, PnL: -0.25, CostAllocated: 5, ClosedAt: now.Add(-time.Minute), Automated: true, ValidationEligible: true, StrategyFingerprint: fingerprint},
 		{PositionID: 12, PnL: 99, CostAllocated: 5, ClosedAt: now, Automated: false},
 	}
 	v := s.Validation()
@@ -242,8 +243,9 @@ func TestConsecutiveLossesTriggerPaperCircuitBreaker(t *testing.T) {
 	s.AutoEnabled = true
 	s.Config.DailyLossLimit = 10
 	now := time.Now()
+	fingerprint := s.strategyFingerprint()
 	for i := int64(1); i <= 3; i++ {
-		s.Trades = append(s.Trades, SimTrade{PositionID: i, PnL: -0.2, ClosedAt: now.Add(time.Duration(i-3) * time.Minute), Automated: true, ValidationEligible: true})
+		s.Trades = append(s.Trades, SimTrade{PositionID: i, PnL: -0.2, ClosedAt: now.Add(time.Duration(i-3) * time.Minute), Automated: true, ValidationEligible: true, StrategyFingerprint: fingerprint})
 	}
 	events := s.AutoEvaluate([]SimQuote{testQuote(1)}, now)
 	if len(events) == 0 || len(s.Positions) != 0 {
@@ -256,7 +258,7 @@ func TestV219MigrationPausesExistingPaperAutomationForQuoteIntegrity(t *testing.
 	s.Config.MaxHoldingHours = 24
 	s.Config.LiquidityDropPct = 30
 	s.Normalize()
-	if s.Version != 5 || s.AutoEnabled || s.AutoProfile != AutoProfileExplore {
+	if s.Version != 6 || s.AutoEnabled || s.AutoProfile != AutoProfileExplore {
 		t.Fatalf("expected current paper-only migration: version=%d auto=%v profile=%d", s.Version, s.AutoEnabled, s.AutoProfile)
 	}
 	if s.Config.MaxHoldingHours != 2 || s.Config.LiquidityDropPct != 25 {
@@ -415,6 +417,18 @@ func TestQuoteInterruptionPausesAutomationWithoutInventingAnExit(t *testing.T) {
 	}
 }
 
+func TestConstantProductImpactRejectsUnexecutablePaperEntry(t *testing.T) {
+	s := NewSimState()
+	q := testQuote(1)
+	q.Liquidity = 100
+	if _, err := s.Buy(q, 20, "manual", time.Now()); err == nil {
+		t.Fatal("paper entry with impact above the configured maximum must be rejected")
+	}
+	if got := s.slippagePct(20, 10_000); got < 1.19 || got > 1.21 {
+		t.Fatalf("constant-product approximation should use one pool side, got %.3f%%", got)
+	}
+}
+
 func TestV219MigrationExcludesLegacyTradesFromValidation(t *testing.T) {
 	now := time.Now()
 	s := &SimState{
@@ -427,5 +441,19 @@ func TestV219MigrationExcludesLegacyTradesFromValidation(t *testing.T) {
 	}
 	if got := s.Validation().ClosedPositions; got != 0 {
 		t.Fatalf("legacy paper result must not be counted by hardened validation, got %d", got)
+	}
+}
+
+func TestValidationDoesNotMixDifferentStrategyFingerprints(t *testing.T) {
+	s := NewSimState()
+	s.Config.MinValidationTrades = 1
+	before := s.strategyFingerprint()
+	s.Trades = []SimTrade{{PositionID: 1, PnL: 5, CostAllocated: 20, ClosedAt: time.Now(), Automated: true, ValidationEligible: true, StrategyFingerprint: before}}
+	if got := s.Validation().ClosedPositions; got != 1 {
+		t.Fatalf("current strategy result should count, got %d", got)
+	}
+	s.Config.StopLossPct++
+	if got := s.Validation().ClosedPositions; got != 0 {
+		t.Fatalf("changed strategy parameters must start a separate validation epoch, got %d", got)
 	}
 }

@@ -1,6 +1,6 @@
-# Multi-Chain Token Radar V2.19
+# Multi-Chain Token Radar V2.20
 
-V2.19 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
+V2.20 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
 Polygon, and Arbitrum. Its
 current workflow is:
 
@@ -14,6 +14,26 @@ current workflow is:
 The application does not connect to a wallet, store private keys, sign orders,
 or submit real transactions. A profitable paper result is not a promise of
 future or live-trading profit.
+
+## V2.20 evidence, source resilience, and validation integrity
+
+- The app records observable five-minute transaction counts, volume, price
+  movement, FDV, liquidity, and a clearly-labelled **early-momentum evidence**
+  score. It is a review aid, not a value prediction or a buy signal.
+- Arbitrum discovery now includes Uniswap V3 alongside Pancake V2/V3. Market
+  and security providers have independent per-chain backoff states, so one
+  unavailable provider cannot trigger a request storm or silently become a
+  successful security check.
+- The UI no longer calls the cadence "a scan every five seconds". A new scan is
+  started no sooner than five seconds after the previous scan ends; the actual
+  duration is reported because public RPC and enrichment time are variable.
+- Paper price impact uses a conservative balanced constant-product approximation
+  rather than total-TVL linear impact. Entries whose estimated impact exceeds
+  the configured ceiling are rejected; an unexecutable exit is modelled as zero
+  recoverable value, not a capped fictional fill.
+- Each paper position stores a readable strategy fingerprint. Changing material
+  sizing, exit, liquidity, cost, or observation rules starts a new validation
+  epoch; prior results remain auditable but cannot be combined into a pass.
 
 ## V2.19 exact-pool quote integrity and strict paper-entry safety
 
