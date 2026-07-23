@@ -176,27 +176,28 @@ const (
 	CW_USEDEFAULT       = ^uintptr(0x7fffffff)
 	SW_MAXIMIZE         = 3
 
-	WM_CREATE        = 0x0001
-	WM_DESTROY       = 0x0002
-	WM_SIZE          = 0x0005
-	WM_PAINT         = 0x000F
-	WM_CLOSE         = 0x0010
-	WM_ERASEBKGND    = 0x0014
-	WM_SETCURSOR     = 0x0020
-	WM_GETMINMAXINFO = 0x0024
-	WM_KEYDOWN       = 0x0100
-	WM_CHAR          = 0x0102
-	WM_TIMER         = 0x0113
-	WM_MOUSEMOVE     = 0x0200
-	WM_LBUTTONDOWN   = 0x0201
-	WM_LBUTTONUP     = 0x0202
-	WM_MOUSEWHEEL    = 0x020A
-	WM_MOUSELEAVE    = 0x02A3
-	WM_DPICHANGED    = 0x02E0
-	WM_APP           = 0x8000
-	WM_SCAN_DONE     = WM_APP + 1
-	WM_DIAG_DONE     = WM_APP + 2
-	WM_UPDATE_DONE   = WM_APP + 3
+	WM_CREATE         = 0x0001
+	WM_DESTROY        = 0x0002
+	WM_SIZE           = 0x0005
+	WM_PAINT          = 0x000F
+	WM_CLOSE          = 0x0010
+	WM_ERASEBKGND     = 0x0014
+	WM_SETCURSOR      = 0x0020
+	WM_GETMINMAXINFO  = 0x0024
+	WM_KEYDOWN        = 0x0100
+	WM_CHAR           = 0x0102
+	WM_TIMER          = 0x0113
+	WM_MOUSEMOVE      = 0x0200
+	WM_LBUTTONDOWN    = 0x0201
+	WM_LBUTTONUP      = 0x0202
+	WM_MOUSEWHEEL     = 0x020A
+	WM_MOUSELEAVE     = 0x02A3
+	WM_DPICHANGED     = 0x02E0
+	WM_APP            = 0x8000
+	WM_SCAN_DONE      = WM_APP + 1
+	WM_DIAG_DONE      = WM_APP + 2
+	WM_UPDATE_DONE    = WM_APP + 3
+	WM_REALTIME_EVENT = WM_APP + 4
 
 	VK_ESCAPE = 0x1B
 	TME_LEAVE = 0x00000002
@@ -358,7 +359,7 @@ type appState struct {
 	lastUpdateCheck   time.Time
 }
 
-var app = &appState{dpi: 96, uiScale: 1.0, selected: -1, selectedPos: -1, selectedTrade: -1, status: "等待多链实时监控", logs: []string{}, dirty: true, autoRefresh: true, sim: NewSimState(), monitor: NewMonitorState()}
+var app = &appState{dpi: 96, uiScale: 1.0, selected: -1, selectedPos: -1, selectedTrade: -1, status: "等待免费事件监听与多链回补", logs: []string{}, dirty: true, autoRefresh: true, sim: NewSimState(), monitor: NewMonitorState()}
 
 const (
 	idNone          = 0
@@ -992,7 +993,7 @@ func drawCommonHeader(dc HDC, l layout, subtitle string) {
 }
 
 func drawSimUI(dc HDC, l layout) {
-	drawCommonHeader(dc, l, "V2.20 证据化新池研究 · $1,000 策略验证 · 不连接钱包")
+	drawCommonHeader(dc, l, "V2.21 三链事件监听 · $1,000 策略验证 · 不连接钱包")
 	if app.sim == nil {
 		app.sim = NewSimState()
 	}
@@ -1274,7 +1275,7 @@ func drawRadarUI(dc HDC, l layout) {
 	ellipse(dc, logo, col.cyan, col.cyan)
 	text(dc, "B", logo, fnts.button, rgb(3, 35, 38), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 	text(dc, "Multi-Chain Token Radar", rect(s(76), l.header.Top+s(10), s(500), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
-	text(dc, "6 条 EVM 链新池发现 · 免费监控 · 本地模拟交易", rect(s(77), l.header.Top+s(48), s(560), s(22)), fnts.subtitle, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, "3 链事件监听 + 6 链区块回补 · 免费监控 · 本地模拟交易", rect(s(77), l.header.Top+s(48), s(650), s(22)), fnts.subtitle, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	drawButton(dc, idPageRadar, l.buttons[idPageRadar], "代币雷达", true, app.page == 0)
 	drawButton(dc, idPageSim, l.buttons[idPageSim], "模拟盘", true, app.page == 1)
 	statusFill := col.panel2
@@ -1355,9 +1356,10 @@ func drawRadarUI(dc HDC, l layout) {
 	if chainText == "" {
 		chainText = fmt.Sprintf("等待 %d 条链区块状态", len(chainModules))
 	}
-	bannerText := fmt.Sprintf("%s · 上次成功 %s · 本轮分析 %d 个 · 耗时 %s · 下轮 %s", chainText, lastOK, app.lastBatchAnalyzed, dur, next)
+	realtimeText := currentRealtimeSummary().Text()
+	bannerText := fmt.Sprintf("%s · %s · 上次成功 %s · 本轮分析 %d 个 · 耗时 %s · 下轮 %s", realtimeText, chainText, lastOK, app.lastBatchAnalyzed, dur, next)
 	if app.scanning {
-		bannerText = fmt.Sprintf("正在并行扫描 ETH / Base / BSC / OP / Polygon / Arbitrum · 已保留 %d 个多链候选", app.candidatePool)
+		bannerText = fmt.Sprintf("%s · 正在并行扫描 ETH / Base / BSC / OP / Polygon / Arbitrum · 已保留 %d 个多链候选", realtimeText, app.candidatePool)
 	}
 	if app.statusKind == 3 {
 		bf = col.redBg
@@ -1874,11 +1876,13 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		pSetTimer.Call(uintptr(hwnd), 1, 500, 0)
 		pSetTimer.Call(uintptr(hwnd), 2, 1000, 0)
 		loadCache()
-		app.candidatePool = len(loadChainCandidates().Candidates)
+		app.candidatePool = len(loadMultiCandidates().Candidates)
 		loadSimState()
 		loadPreferences()
 		app.monitor = loadMonitorState()
-		addLog("V2.20 已启动：精确池保护、严格安全门槛、数据退避和策略指纹已启用；不连接钱包")
+		startFreeRealtimeDiscovery()
+		addLog("V2.21 已启动：三链免费事件监听、HTTP 区块回补、精确池保护和策略指纹已启用；不连接钱包")
+		addLog("免费事件监听状态：" + currentRealtimeSummary().Text())
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
 		return 0
@@ -2060,10 +2064,21 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 	case WM_UPDATE_DONE:
 		finishUpdateTask()
 		return 0
+	case WM_REALTIME_EVENT:
+		// A new factory event can wake the next reconciliation early, but never
+		// starts a scan storm: one full scan is still rate-limited locally.
+		if app.autoRefresh && !app.scanning && time.Since(app.lastPollTry) >= 2*time.Second {
+			app.lastPollTry = time.Now()
+			startScan(false)
+		} else {
+			invalidate(false)
+		}
+		return 0
 	case WM_CLOSE:
 		if app.scanCancel != nil {
 			app.scanCancel()
 		}
+		stopFreeRealtimeDiscovery()
 		pKillTimer.Call(uintptr(hwnd), 1)
 		pKillTimer.Call(uintptr(hwnd), 2)
 		pDestroyWindow.Call(uintptr(hwnd))
@@ -2263,7 +2278,7 @@ func handleClick(id int) {
 		}
 	case id == idAuto:
 		app.autoRefresh = !app.autoRefresh
-		app.toast = "5秒实时监控已" + onOff(app.autoRefresh)
+		app.toast = "事件监听＋5秒回补已" + onOff(app.autoRefresh)
 		app.toastUntil = time.Now().Add(2 * time.Second)
 		if app.autoRefresh {
 			app.lastPollTry = time.Time{}
@@ -2368,6 +2383,7 @@ func handleClick(id int) {
 }
 
 func cleanup() {
+	stopFreeRealtimeDiscovery()
 	saveSimState()
 	savePreferences()
 	_ = saveMonitorState(app.monitor)
@@ -2416,7 +2432,7 @@ func startScan(manual bool) {
 	if manual {
 		app.status = "正在手动扫描"
 	} else {
-		app.status = "正在实时增量监控"
+		app.status = "正在事件队列回补与多链增量监控"
 	}
 	app.statusKind = 2
 	if manual {
@@ -2490,7 +2506,7 @@ func finishScan() {
 	if quietHeartbeat && app.autoRefresh && !out.manual && time.Since(app.lastHeartbeatLog) < time.Minute {
 		// Keep the UI and disk log quiet during normal 5-second polling.
 	} else if quietHeartbeat && app.autoRefresh && !out.manual {
-		addLog("实时监控正常：多链区块游标持续推进，当前没有新池事件")
+		addLog("实时回补正常：多链区块游标持续推进，当前没有待确认新池事件；" + currentRealtimeSummary().Text())
 		app.lastHeartbeatLog = time.Now()
 	} else {
 		for _, l := range out.logs {
@@ -2575,7 +2591,7 @@ func finishScan() {
 		saveCache()
 		saveSimState()
 		if logCompletion {
-			addLog(fmt.Sprintf("实时更新完成：列表 %d 个 / 候选库 %d 个 / 本轮分析 %d 个 / 耗时 %.1f 秒", len(app.results), app.candidatePool, app.lastBatchAnalyzed, app.lastScanDuration.Seconds()))
+			addLog(fmt.Sprintf("实时更新完成：%s / 列表 %d 个 / 候选库 %d 个 / 本轮分析 %d 个 / 耗时 %.1f 秒", currentRealtimeSummary().Text(), len(app.results), app.candidatePool, app.lastBatchAnalyzed, app.lastScanDuration.Seconds()))
 		}
 	}
 	invalidate(false)
@@ -4708,12 +4724,12 @@ func dataFreshness(t time.Time) string {
 }
 func statusBarText() string {
 	if app.scanning {
-		return "扫描中：6 条链与补充接口最长等待 90 秒；可随时点击“停止扫描”。"
+		return "扫描中：6 条链 HTTP 回补与补充接口最长等待 90 秒；事件监听会继续排队。"
 	}
 	if app.statusKind == 3 {
-		return "部分链或补充接口暂不可用，已保留上次结果；请使用连接诊断。"
+		return "部分链或补充接口暂不可用，已保留上次结果；事件队列会等待 HTTP 回补。"
 	}
-	return "就绪 · 上一轮结束后最快5秒检查；模拟盘不连接钱包、不发送真实交易。"
+	return "就绪 · 免费事件 " + currentRealtimeSummary().ShortText() + "，HTTP 持续回补；模拟盘不连接钱包、不发送真实交易。"
 }
 func onOff(b bool) string {
 	if b {
@@ -4925,8 +4941,8 @@ func main() {
 	// Per-monitor v2 DPI awareness. -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
-	className := utf16Ptr("MultiChainTokenRadarV218Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.20 · 证据化新池研究与策略验证")
+	className := utf16Ptr("MultiChainTokenRadarV221Window")
+	title := utf16Ptr("Multi-Chain Token Radar V2.21 · 三链事件监听与策略验证")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {

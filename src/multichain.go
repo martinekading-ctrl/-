@@ -17,17 +17,27 @@ import (
 	"time"
 )
 
+const (
+	moduleDiscoveryTimeout = 22 * time.Second
+	multiEnrichmentTimeout = 18 * time.Second
+)
+
 // V2.5 keeps EVM chains behind one small module contract.  Adding a chain no
 // longer requires copying the full scanner or mixing its cursor with another
 // network.
 type chainModule struct {
-	Key             string
-	Name            string
-	Short           string
-	ChainID         string
-	DexSlug         string
-	EnvRPC          string
-	RPCs            []string
+	Key     string
+	Name    string
+	Short   string
+	ChainID string
+	DexSlug string
+	EnvRPC  string
+	RPCs    []string
+	// WSRPCs is deliberately only configured for the three free deep-monitor
+	// chains. HTTP remains the durable reconciliation path for every chain.
+	// Users can supply a free-key endpoint through <CHAIN>_WSS_URL.
+	WSRPCs          []string
+	Realtime        bool
 	Factories       []factorySpec
 	KnownAssets     map[string]bool
 	InitialLookback uint64
@@ -62,7 +72,8 @@ var chainModules = []chainModule{
 	},
 	{
 		Key: "base", Name: "Base", Short: "BASE", ChainID: "8453", DexSlug: "base", EnvRPC: "BASE_RPC_URL",
-		RPCs: []string{"https://mainnet.base.org", "https://mainnet-preconf.base.org"},
+		RPCs:   []string{"https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://mainnet-preconf.base.org"},
+		WSRPCs: []string{"wss://base-rpc.publicnode.com"}, Realtime: true,
 		Factories: []factorySpec{
 			{Name: "Aerodrome", Address: aerodromeFactory, Topic: topicAerodromePoolCreated, Kind: "aero"},
 			{Name: "Uniswap V3", Address: uniswapV3Factory, Topic: topicUniswapV3PoolCreated, Kind: "v3"},
@@ -84,7 +95,8 @@ var chainModules = []chainModule{
 		// 1RPC accepts no-key BSC logs in small ranges. Keep its 10-block limit
 		// below the module chunk size so public endpoints remain usable on a
 		// desktop proxy; users can still override with BSC_RPC_URL.
-		RPCs: []string{"https://1rpc.io/bnb", "https://bsc-rpc.publicnode.com", "https://bnb.rpc.subquery.network/public"},
+		RPCs:   []string{"https://1rpc.io/bnb", "https://bsc-rpc.publicnode.com", "https://bnb.rpc.subquery.network/public"},
+		WSRPCs: []string{"wss://bsc-rpc.publicnode.com"}, Realtime: true,
 		Factories: []factorySpec{
 			{Name: "Pancake V2", Address: pancakeV2BSC, Topic: topicUniswapV2PairCreated, Kind: "v2"},
 			{Name: "Pancake V3", Address: pancakeV3EVM, Topic: topicUniswapV3PoolCreated, Kind: "v3"},
@@ -129,7 +141,8 @@ var chainModules = []chainModule{
 	},
 	{
 		Key: "arbitrum", Name: "Arbitrum One", Short: "ARB", ChainID: "42161", DexSlug: "arbitrum", EnvRPC: "ARBITRUM_RPC_URL",
-		RPCs: []string{"https://arb1.arbitrum.io/rpc", "https://arbitrum-one-rpc.publicnode.com"},
+		RPCs:   []string{"https://arb1.arbitrum.io/rpc", "https://arbitrum-one-rpc.publicnode.com"},
+		WSRPCs: []string{"wss://arbitrum-one-rpc.publicnode.com"}, Realtime: true,
 		Factories: []factorySpec{
 			{Name: "Uniswap V3", Address: uniswapV3Canonical, Topic: topicUniswapV3PoolCreated, Kind: "v3"},
 			{Name: "Pancake V2", Address: pancakeV2EVM, Topic: topicUniswapV2PairCreated, Kind: "v2"},
@@ -168,12 +181,18 @@ func tokenIdentity(chain, address string) string {
 }
 
 type multiCandidate struct {
-	Chain        string    `json:"chain"`
-	TokenAddress string    `json:"token_address"`
-	PoolAddress  string    `json:"pool_address"`
-	Factory      string    `json:"factory"`
-	BlockNumber  uint64    `json:"block_number"`
-	SeenAt       time.Time `json:"seen_at"`
+	Chain         string    `json:"chain"`
+	TokenAddress  string    `json:"token_address"`
+	PoolAddress   string    `json:"pool_address"`
+	Factory       string    `json:"factory"`
+	BlockNumber   uint64    `json:"block_number"`
+	SeenAt        time.Time `json:"seen_at"`
+	EventTxHash   string    `json:"event_tx_hash,omitempty"`
+	EventLogIndex string    `json:"event_log_index,omitempty"`
+	// Realtime is a receipt from an unconfirmed WebSocket log. It can make a
+	// candidate visible promptly, but HTTP reconciliation remains authoritative
+	// for the cursor and every strict-market decision.
+	Realtime bool `json:"realtime,omitempty"`
 }
 
 type multiCandidateFile struct {
@@ -186,7 +205,7 @@ type multiCandidateFile struct {
 func multiCandidatePath() string { return filepath.Join(dataDir(), "multichain_candidates_v25.json") }
 
 func loadMultiCandidates() multiCandidateFile {
-	f := multiCandidateFile{Version: 1, LastBlocks: map[string]uint64{}}
+	f := multiCandidateFile{Version: 2, LastBlocks: map[string]uint64{}}
 	if b, err := os.ReadFile(multiCandidatePath()); err == nil {
 		_ = json.Unmarshal(b, &f)
 	} else if b, e := os.ReadFile(filepath.Join(dataDir(), "chain_candidates_v24.json")); e == nil {
@@ -216,17 +235,18 @@ func loadMultiCandidates() multiCandidateFile {
 	return f
 }
 
-func saveMultiCandidates(f multiCandidateFile) {
-	f.Version = 1
+func saveMultiCandidates(f multiCandidateFile) error {
+	f.Version = 2
 	f.UpdatedAt = time.Now()
 	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
-		return
+		return err
 	}
 	tmp := multiCandidatePath() + ".tmp"
 	if os.WriteFile(tmp, b, 0644) == nil {
-		_ = replaceFile(tmp, multiCandidatePath())
+		return replaceFile(tmp, multiCandidatePath())
 	}
+	return errors.New("multi-chain candidate file could not be written")
 }
 
 func rpcCallModule(ctx context.Context, m chainModule, method string, params any, out any) (string, string, error) {
@@ -249,6 +269,51 @@ func rpcCallModule(ctx context.Context, m chainModule, method string, params any
 	return "", "", errors.New(strings.Join(errs, "；"))
 }
 
+func candidatesFromFactoryLog(m chainModule, spec factorySpec, lg rpcLog, seenAt time.Time, realtime bool) []multiCandidate {
+	if lg.Removed || len(lg.Topics) < 3 {
+		return nil
+	}
+	t0, t1 := topicAddress(lg.Topics[1]), topicAddress(lg.Topics[2])
+	if !validAddress(t0) || !validAddress(t1) {
+		return nil
+	}
+	pool := ""
+	if spec.Kind == "v3" {
+		pool = dataAddress(lg.Data, 1)
+	} else {
+		pool = dataAddress(lg.Data, 0)
+	}
+	if !validAddress(pool) {
+		return nil
+	}
+	bn, _ := parseHexUint(lg.BlockNumber)
+	add := func(tok string, out *[]multiCandidate) {
+		tok = strings.ToLower(tok)
+		if !m.KnownAssets[tok] {
+			*out = append(*out, multiCandidate{Chain: m.Key, TokenAddress: tok, PoolAddress: pool, Factory: spec.Name, BlockNumber: bn, SeenAt: seenAt, EventTxHash: strings.ToLower(lg.TransactionHash), EventLogIndex: strings.ToLower(lg.LogIndex), Realtime: realtime})
+		}
+	}
+	out := []multiCandidate{}
+	if m.KnownAssets[t0] && !m.KnownAssets[t1] {
+		add(t1, &out)
+	} else if m.KnownAssets[t1] && !m.KnownAssets[t0] {
+		add(t0, &out)
+	}
+	// Unknown/unknown pools are intentionally not candidates. They have no
+	// trustworthy price leg and are a common way for an old token to create a
+	// fresh auxiliary pool that looks like a launch event.
+	return out
+}
+
+func factoryForRealtimeLog(m chainModule, lg rpcLog) (factorySpec, bool) {
+	for _, spec := range m.Factories {
+		if strings.EqualFold(spec.Address, lg.Address) && len(lg.Topics) > 0 && strings.EqualFold(spec.Topic, lg.Topics[0]) {
+			return spec, true
+		}
+	}
+	return factorySpec{}, false
+}
+
 func scanFactoryLogsModule(ctx context.Context, m chainModule, from, to uint64, spec factorySpec) ([]multiCandidate, error) {
 	filter := map[string]any{"fromBlock": fmt.Sprintf("0x%x", from), "toBlock": fmt.Sprintf("0x%x", to), "address": spec.Address, "topics": []any{spec.Topic}}
 	var logs []rpcLog
@@ -258,37 +323,7 @@ func scanFactoryLogsModule(ctx context.Context, m chainModule, from, to uint64, 
 	}
 	out := []multiCandidate{}
 	for _, lg := range logs {
-		if lg.Removed || len(lg.Topics) < 3 {
-			continue
-		}
-		t0, t1 := topicAddress(lg.Topics[1]), topicAddress(lg.Topics[2])
-		if !validAddress(t0) || !validAddress(t1) {
-			continue
-		}
-		pool := ""
-		if spec.Kind == "v3" {
-			pool = dataAddress(lg.Data, 1)
-		} else {
-			pool = dataAddress(lg.Data, 0)
-		}
-		if !validAddress(pool) {
-			continue
-		}
-		bn, _ := parseHexUint(lg.BlockNumber)
-		add := func(tok string) {
-			tok = strings.ToLower(tok)
-			if !m.KnownAssets[tok] {
-				out = append(out, multiCandidate{Chain: m.Key, TokenAddress: tok, PoolAddress: pool, Factory: spec.Name, BlockNumber: bn, SeenAt: time.Now()})
-			}
-		}
-		if m.KnownAssets[t0] && !m.KnownAssets[t1] {
-			add(t1)
-		} else if m.KnownAssets[t1] && !m.KnownAssets[t0] {
-			add(t0)
-		}
-		// Unknown/unknown pools are intentionally not candidates. They have no
-		// trustworthy price leg and are a common way for an old token to create a
-		// fresh auxiliary pool that looks like a launch event.
+		out = append(out, candidatesFromFactoryLog(m, spec, lg, time.Now(), false)...)
 	}
 	return out, nil
 }
@@ -401,12 +436,18 @@ func confirmedBlock(latest, confirmations uint64) uint64 {
 
 func discoverAllModules(ctx context.Context) ([]multiCandidate, []string, map[string]uint64, int, int, error) {
 	f := loadMultiCandidates()
+	realtimeCandidates, receipt := pendingRealtimeCandidates()
 	ch := make(chan moduleDiscoverResult, len(chainModules))
 	var wg sync.WaitGroup
 	for _, m := range chainModules {
 		m := m
 		wg.Add(1)
-		go func() { defer wg.Done(); ch <- discoverModule(ctx, m, f.LastBlocks[m.Key]) }()
+		go func() {
+			defer wg.Done()
+			moduleCtx, cancel := context.WithTimeout(ctx, moduleDiscoveryTimeout)
+			defer cancel()
+			ch <- discoverModule(moduleCtx, m, f.LastBlocks[m.Key])
+		}()
 	}
 	wg.Wait()
 	close(ch)
@@ -430,12 +471,12 @@ func discoverAllModules(ctx context.Context) ([]multiCandidate, []string, map[st
 		found = append(found, r.Candidates...)
 	}
 	merged := map[string]multiCandidate{}
-	for _, c := range append(f.Candidates, found...) {
+	for _, c := range append(append(f.Candidates, realtimeCandidates...), found...) {
 		c.Chain = normalizeChain(c.Chain)
 		c.TokenAddress = strings.ToLower(c.TokenAddress)
 		c.PoolAddress = strings.ToLower(c.PoolAddress)
 		k := tokenIdentity(c.Chain, c.TokenAddress)
-		if old, ok := merged[k]; !ok || c.BlockNumber > old.BlockNumber {
+		if old, ok := merged[k]; !ok || c.BlockNumber > old.BlockNumber || (c.BlockNumber == old.BlockNumber && old.Realtime && !c.Realtime) {
 			merged[k] = c
 		}
 	}
@@ -457,7 +498,14 @@ func discoverAllModules(ctx context.Context) ([]multiCandidate, []string, map[st
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].SeenAt.After(all[j].SeenAt) })
 	f.Candidates = all
-	saveMultiCandidates(f)
+	if err := saveMultiCandidates(f); err != nil {
+		logs = append(logs, "本地候选断点保存失败："+shortErr(err))
+	} else {
+		ackRealtimeCandidates(receipt)
+	}
+	if len(realtimeCandidates) > 0 {
+		logs = append(logs, fmt.Sprintf("免费事件监听：本轮接入 %d 个本地排队候选；HTTP 日志回补继续校验", len(realtimeCandidates)))
+	}
 	logs = append(logs, fmt.Sprintf("多链汇总：本轮新发现 %d 条；本地候选 %d 条；可用链 %d/%d", newFound, len(all), active, len(chainModules)))
 	if active == 0 {
 		return nil, logs, latest, newFound, active, errors.New(strings.Join(errs, "；"))
@@ -585,7 +633,16 @@ func placeholderMulti(c multiCandidate) Token {
 		sym = strings.ToUpper(a[2:8])
 	}
 	label := chainLabel(c.Chain)
-	return Token{Chain: c.Chain, ChainID: chainIDFor(c.Chain), Score: 0, Grade: "等待分析", Name: label + " 链上新代币", Symbol: sym, Address: a, AgeHours: time.Since(c.SeenAt).Hours(), Security: "待检测", Source: label + " · " + c.Factory, PoolAddress: c.PoolAddress, BlockNumber: c.BlockNumber, DEXURL: dexURLFor(c.Chain, c.PoolAddress), Evidence: []string{fmt.Sprintf("%s 直接发现新池：%s，区块 %d", label, c.Factory, c.BlockNumber), "等待进入分批分析队列；不是买入信号"}}
+	source := label + " · " + c.Factory
+	evidence := []string{fmt.Sprintf("%s 直接发现新池：%s，区块 %d", label, c.Factory, c.BlockNumber), "等待进入分批分析队列；不是买入信号"}
+	if c.EventTxHash != "" {
+		evidence = append(evidence, "可审计建池事件交易："+shortAddr(c.EventTxHash)+"，日志 "+c.EventLogIndex)
+	}
+	if c.Realtime {
+		source += " · 事件待回补"
+		evidence = append([]string{"免费 WebSocket 事件先到：尚未通过 HTTP 区块回补，不会进入模拟交易"}, evidence...)
+	}
+	return Token{Chain: c.Chain, ChainID: chainIDFor(c.Chain), Score: 0, Grade: "等待分析", Name: label + " 链上新代币", Symbol: sym, Address: a, AgeHours: time.Since(c.SeenAt).Hours(), Security: "待检测", Source: source, PoolAddress: c.PoolAddress, BlockNumber: c.BlockNumber, DEXURL: dexURLFor(c.Chain, c.PoolAddress), Evidence: evidence}
 }
 func chainIDFor(key string) string {
 	if m, ok := chainByKey(key); ok {
@@ -740,6 +797,70 @@ func fetchSecurityForChain(ctx context.Context, m chainModule, addresses []strin
 	}
 	securityCacheMu.Unlock()
 	return out, nil
+}
+
+// multiEnrichmentResult keeps each chain's public-source work independent.
+// A slow or rate-limited chain gets a bounded local timeout and cannot make
+// every other chain wait behind it. The existing per-chain backoff still
+// governs whether a provider is called at all.
+type multiEnrichmentResult struct {
+	Chain      string
+	Pairs      map[string][]dexPair
+	Security   map[string]map[string]any
+	SecurityOK bool
+	Logs       []string
+}
+
+func enrichMultiChain(ctx context.Context, m chainModule, addresses []string, wanted map[string]multiCandidate) multiEnrichmentResult {
+	result := multiEnrichmentResult{Chain: m.Key, Pairs: map[string][]dexPair{}, Security: map[string]map[string]any{}}
+	if len(addresses) == 0 {
+		return result
+	}
+	chainCtx, cancel := context.WithTimeout(ctx, multiEnrichmentTimeout)
+	defer cancel()
+	marketReady := true
+	for i := 0; i < len(addresses); i += 30 {
+		j := i + 30
+		if j > len(addresses) {
+			j = len(addresses)
+		}
+		var pairs []dexPair
+		u := "https://api.dexscreener.com/tokens/v1/" + m.DexSlug + "/" + strings.Join(addresses[i:j], ",")
+		if e := marketRequestAllowed(m.Key, time.Now()); e != nil {
+			result.Logs = append(result.Logs, m.Short+" DEX市场数据暂不可用："+shortErr(e))
+			marketReady = false
+			break
+		}
+		if e := getJSON(chainCtx, u, &pairs); e != nil {
+			recordMarketFailure(m.Key, time.Now(), e)
+			result.Logs = append(result.Logs, m.Short+" DEX补充失败："+shortErr(e))
+			marketReady = false
+			break
+		}
+		clearMarketBackoff(m.Key)
+		for _, p := range pairs {
+			baseAddr := strings.ToLower(p.BaseToken.Address)
+			quoteAddr := strings.ToLower(p.QuoteToken.Address)
+			for _, a := range []string{baseAddr, quoteAddr} {
+				k := tokenIdentity(m.Key, a)
+				if _, tracked := wanted[k]; tracked {
+					result.Pairs[k] = append(result.Pairs[k], p)
+				}
+			}
+		}
+	}
+	sec, e := fetchSecurityForChain(chainCtx, m, addresses)
+	if e != nil {
+		result.Logs = append(result.Logs, m.Short+" GoPlus失败："+shortErr(e))
+	} else {
+		result.Security, result.SecurityOK = sec, true
+		if marketReady {
+			result.Logs = append(result.Logs, fmt.Sprintf("%s：市场候选 %d 个，安全返回 %d 个", m.Short, len(result.Pairs), len(sec)))
+		} else {
+			result.Logs = append(result.Logs, fmt.Sprintf("%s：市场补充暂缺，安全返回 %d 个", m.Short, len(sec)))
+		}
+	}
+	return result
 }
 
 func topMultiDisplay(cache map[string]Token, limit int) []Token {
@@ -1024,12 +1145,15 @@ func strictRiskWarnings(t Token) []string {
 // refer to a different market than the simulated entry.
 func resolveTrackedCandidate(raw multiCandidate, cached Token, cacheOK bool, discovered multiCandidate, discoveredOK bool) multiCandidate {
 	c := multiCandidate{
-		Chain:        normalizeChain(raw.Chain),
-		TokenAddress: strings.ToLower(raw.TokenAddress),
-		PoolAddress:  strings.ToLower(raw.PoolAddress),
-		Factory:      raw.Factory,
-		BlockNumber:  raw.BlockNumber,
-		SeenAt:       raw.SeenAt,
+		Chain:         normalizeChain(raw.Chain),
+		TokenAddress:  strings.ToLower(raw.TokenAddress),
+		PoolAddress:   strings.ToLower(raw.PoolAddress),
+		Factory:       raw.Factory,
+		BlockNumber:   raw.BlockNumber,
+		SeenAt:        raw.SeenAt,
+		EventTxHash:   raw.EventTxHash,
+		EventLogIndex: raw.EventLogIndex,
+		Realtime:      raw.Realtime,
 	}
 	if c.PoolAddress == "" && cacheOK {
 		c.PoolAddress = strings.ToLower(cached.PoolAddress)
@@ -1043,6 +1167,9 @@ func resolveTrackedCandidate(raw multiCandidate, cached Token, cacheOK bool, dis
 		}
 		if c.BlockNumber == 0 {
 			c.BlockNumber = discovered.BlockNumber
+		}
+		if c.EventTxHash == "" {
+			c.EventTxHash, c.EventLogIndex = discovered.EventTxHash, discovered.EventLogIndex
 		}
 		if c.Factory == "" {
 			c.Factory = discovered.Factory
@@ -1125,6 +1252,9 @@ func multiScanMarket(ctx context.Context, heldRefs []multiCandidate) ([]Token, [
 			if c.BlockNumber == 0 {
 				c.BlockNumber = discovered.BlockNumber
 			}
+			if c.EventTxHash == "" {
+				c.EventTxHash, c.EventLogIndex = discovered.EventTxHash, discovered.EventLogIndex
+			}
 			if c.Factory == "" {
 				c.Factory = discovered.Factory
 			}
@@ -1145,6 +1275,9 @@ func multiScanMarket(ctx context.Context, heldRefs []multiCandidate) ([]Token, [
 			old.ChainID = chainIDFor(c.Chain)
 			if c.Factory != "" && (c.Factory != "模拟持仓跟踪" || old.Source == "") {
 				old.Source = chainLabel(c.Chain) + " · " + c.Factory
+				if c.Realtime {
+					old.Source += " · 事件待回补"
+				}
 			}
 			// A transient tracking reference must never erase the exact pool that
 			// an open paper position was entered through.
@@ -1167,49 +1300,35 @@ func multiScanMarket(ctx context.Context, heldRefs []multiCandidate) ([]Token, [
 	marketPairs := map[string][]dexPair{}
 	security := map[string]map[string]any{}
 	securityOK := map[string]bool{}
+	enrichmentCh := make(chan multiEnrichmentResult, len(chainModules))
+	var enrichmentWG sync.WaitGroup
 	for _, m := range chainModules {
-		addresses := groups[m.Key]
+		addresses := append([]string(nil), groups[m.Key]...)
 		if len(addresses) == 0 {
 			continue
 		}
-		for i := 0; i < len(addresses); i += 30 {
-			j := i + 30
-			if j > len(addresses) {
-				j = len(addresses)
-			}
-			var pairs []dexPair
-			u := "https://api.dexscreener.com/tokens/v1/" + m.DexSlug + "/" + strings.Join(addresses[i:j], ",")
-			if e := marketRequestAllowed(m.Key, time.Now()); e != nil {
-				logs = append(logs, m.Short+" DEX市场数据暂不可用："+shortErr(e))
-				break
-			}
-			if e := getJSON(ctx, u, &pairs); e != nil {
-				recordMarketFailure(m.Key, time.Now(), e)
-				logs = append(logs, m.Short+" DEX补充失败："+shortErr(e))
-				break
-			}
-			clearMarketBackoff(m.Key)
-			for _, p := range pairs {
-				baseAddr := strings.ToLower(p.BaseToken.Address)
-				quoteAddr := strings.ToLower(p.QuoteToken.Address)
-				for _, a := range []string{baseAddr, quoteAddr} {
-					k := tokenIdentity(m.Key, a)
-					if _, wanted := byKey[k]; wanted {
-						marketPairs[k] = append(marketPairs[k], p)
-					}
-				}
-			}
+		m := m
+		enrichmentWG.Add(1)
+		go func() {
+			defer enrichmentWG.Done()
+			enrichmentCh <- enrichMultiChain(ctx, m, addresses, byKey)
+		}()
+	}
+	go func() {
+		enrichmentWG.Wait()
+		close(enrichmentCh)
+	}()
+	for enriched := range enrichmentCh {
+		logs = append(logs, enriched.Logs...)
+		for k, pairs := range enriched.Pairs {
+			marketPairs[k] = append(marketPairs[k], pairs...)
 		}
-		sec, e := fetchSecurityForChain(ctx, m, addresses)
-		if e != nil {
-			logs = append(logs, m.Short+" GoPlus失败："+shortErr(e))
-		} else {
-			for a, v := range sec {
-				k := tokenIdentity(m.Key, a)
-				security[k] = v
+		if enriched.SecurityOK {
+			for address, value := range enriched.Security {
+				k := tokenIdentity(enriched.Chain, address)
+				security[k] = value
 				securityOK[k] = true
 			}
-			logs = append(logs, fmt.Sprintf("%s：市场候选 %d 个，安全返回 %d 个", m.Short, countMarketPairsForChain(marketPairs, m.Key), len(sec)))
 		}
 	}
 	metaUsed := map[string]int{}
@@ -1272,13 +1391,28 @@ func multiScanMarket(ctx context.Context, heldRefs []multiCandidate) ([]Token, [
 		t.Chain = m.Key
 		t.ChainID = m.ChainID
 		t.Source = m.Short + " · " + c.Factory
+		if c.Realtime {
+			t.Source += " · 事件待回补"
+		}
 		t.PoolAddress = c.PoolAddress
 		t.BlockNumber = c.BlockNumber
 		t.UpdatedAt = time.Now()
 		t.MetadataCheckedAt = metadataChecked
 		t.DEXURL = p.URL
-		t.Evidence = append([]string{fmt.Sprintf("%s 链直接发现：%s 新池，区块 %d", m.Short, c.Factory, c.BlockNumber)}, t.Evidence...)
-		if !marketOK {
+		prefixEvidence := fmt.Sprintf("%s 链直接发现：%s 新池，区块 %d", m.Short, c.Factory, c.BlockNumber)
+		if c.Realtime {
+			prefixEvidence = "免费 WebSocket 事件先到，等待 HTTP 区块日志回补后再允许严格资格检查；" + prefixEvidence
+		}
+		t.Evidence = append([]string{prefixEvidence}, t.Evidence...)
+		if c.EventTxHash != "" {
+			t.Evidence = append([]string{"可审计建池事件交易：" + shortAddr(c.EventTxHash) + "，日志 " + c.EventLogIndex}, t.Evidence...)
+		}
+		if c.Realtime {
+			stats.Awaiting++
+			t.PotentialEligible = false
+			t.PotentialStage = "等待区块日志回补"
+			t.Evidence = append(t.Evidence, "事件通知可能受链重组或索引延迟影响；严格筛选和模拟交易保持关闭")
+		} else if !marketOK {
 			t.Evidence = append(t.Evidence, "DEX Screener 尚未索引该池，价格与流动性暂缺")
 		}
 		if !marketOK {
@@ -1343,7 +1477,31 @@ func diagnoseMultiChain() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	var b strings.Builder
-	b.WriteString("连接诊断结果（V2.5 多链版）\n\n网络引擎：Windows WinHTTP 自动代理优先，Go 直连/环境代理兜底\n系统代理：" + windowsProxySummary() + "\n\n")
+	b.WriteString("连接诊断结果（V2.21 免费事件监听版）\n\n网络引擎：Windows WinHTTP 自动代理优先，Go 直连/环境代理兜底\n系统代理：" + windowsProxySummary() + "\n\n")
+	realtime := currentRealtimeSummary()
+	b.WriteString("免费 WebSocket 事件监听：" + realtime.Text() + "\n")
+	for _, health := range realtime.Chains {
+		state := "✕ 未连接"
+		if health.Connected && !health.LastMessageAt.IsZero() && time.Since(health.LastMessageAt) <= realtimeStaleAfter {
+			state = "✓ 已连接"
+		}
+		line := fmt.Sprintf("   %s %s · 重连 %d · 事件 %d", state, chainLabel(health.Chain), health.Reconnects, health.EventCount)
+		if health.Endpoint != "" {
+			line += "\n     " + health.Endpoint
+		}
+		if health.LastHead > 0 {
+			lag := health.LastHeadLag
+			if lag < 0 {
+				lag = 0
+			}
+			line += fmt.Sprintf("\n     最新订阅区块 %d · 区块时间滞后 %.0f 秒", health.LastHead, lag.Seconds())
+		}
+		if health.LastError != "" {
+			line += "\n     最近错误：" + health.LastError
+		}
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("事件候选需经 HTTP 区块日志回补确认，未确认时不会进入模拟交易。\n\n")
 	okChains := 0
 	for _, m := range chainModules {
 		st := time.Now()

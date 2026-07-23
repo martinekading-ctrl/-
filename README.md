@@ -1,8 +1,8 @@
-# Multi-Chain Token Radar V2.20
+# Multi-Chain Token Radar V2.21
 
 > 上线、数据和安全边界请先阅读 [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)。本项目当前只做研究与本地模拟，不连接钱包或发送真实交易。
 
-V2.20 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
+V2.21 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
 Polygon, and Arbitrum. Its
 current workflow is:
 
@@ -16,6 +16,25 @@ current workflow is:
 The application does not connect to a wallet, store private keys, sign orders,
 or submit real transactions. A profitable paper result is not a promise of
 future or live-trading profit.
+
+## V2.21 free event-first discovery with durable reconciliation
+
+- Base, BSC, and Arbitrum now have a small standard-library WebSocket listener
+  for DEX factory events. It keeps a local disk-backed event queue and exposes
+  per-chain connection, reconnect, endpoint, event, and pending-queue state.
+- A received WebSocket event is deliberately **not** a signal or a paper-entry
+  permission. It remains `等待区块日志回补` until the existing HTTP `eth_getLogs`
+  cursor sees the same chain event. This makes disconnects and chain
+  reorganizations fail closed rather than silently becoming a buy decision.
+- All six EVM chains retain HTTP factory-log scanning, independent public-RPC
+  fallback, persisted cursors, and exact-pool matching. The free three-chain
+  listener is an earlier receipt path, not a replacement for reconciliation.
+- Market/security enrichment now runs as one bounded worker per chain (18
+  seconds each) after discovery. One slow public source is logged and skipped
+  rather than serially consuming the full scan window for every other chain.
+- Free public endpoints are best-effort infrastructure. The UI reports actual
+  event connection status and scan duration; it makes no fixed latency or
+  “first block” claim.
 
 ## V2.20 evidence, source resilience, and validation integrity
 
