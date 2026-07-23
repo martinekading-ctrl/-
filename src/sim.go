@@ -101,6 +101,7 @@ type SimPosition struct {
 	OpenedAt         time.Time `json:"opened_at"`
 	TP1Done          bool      `json:"tp1_done"`
 	Automated        bool      `json:"automated"`
+	Exploratory      bool      `json:"exploratory"`
 	EntryReason      string    `json:"entry_reason"`
 }
 
@@ -122,6 +123,49 @@ type SimTrade struct {
 	ClosedAt      time.Time `json:"closed_at"`
 	Reason        string    `json:"reason"`
 	Automated     bool      `json:"automated"`
+	Exploratory   bool      `json:"exploratory"`
+}
+
+// ShadowSample tracks a near-miss without reserving paper cash. It is research
+// telemetry only: an outcome is never counted as a simulated trade or proof of
+// profitability.
+type ShadowSample struct {
+	ID             int64     `json:"id"`
+	Chain          string    `json:"chain"`
+	Address        string    `json:"address"`
+	Symbol         string    `json:"symbol"`
+	EntryPrice     float64   `json:"entry_price"`
+	CurrentPrice   float64   `json:"current_price"`
+	EntryLiquidity float64   `json:"entry_liquidity"`
+	Score          int       `json:"score"`
+	OpenedAt       time.Time `json:"opened_at"`
+	LastQuoteAt    time.Time `json:"last_quote_at"`
+	Reason         string    `json:"reason"`
+}
+
+type ShadowOutcome struct {
+	ID         int64     `json:"id"`
+	Chain      string    `json:"chain"`
+	Address    string    `json:"address"`
+	Symbol     string    `json:"symbol"`
+	Score      int       `json:"score"`
+	EntryPrice float64   `json:"entry_price"`
+	ExitPrice  float64   `json:"exit_price"`
+	PnLPct     float64   `json:"pnl_pct"`
+	OpenedAt   time.Time `json:"opened_at"`
+	ClosedAt   time.Time `json:"closed_at"`
+	Reason     string    `json:"reason"`
+}
+
+// EntryDiagnostics is reset on each completed market evaluation. It makes the
+// exact blockers visible instead of silently producing a zero-trade night.
+type EntryDiagnostics struct {
+	UpdatedAt     time.Time      `json:"updated_at"`
+	Evaluated     int            `json:"evaluated"`
+	Eligible      int            `json:"eligible"`
+	Opened        int            `json:"opened"`
+	ShadowStarted int            `json:"shadow_started"`
+	Rejections    map[string]int `json:"rejections"`
 }
 
 type SimMetrics struct {
@@ -138,26 +182,30 @@ type SimMetrics struct {
 }
 
 type SimState struct {
-	Version       int                        `json:"version"`
-	Config        SimConfig                  `json:"config"`
-	Cash          float64                    `json:"cash"`
-	Positions     []SimPosition              `json:"positions"`
-	Trades        []SimTrade                 `json:"trades"`
-	Snapshots     map[string][]PriceSnapshot `json:"snapshots"`
-	AutoEnabled   bool                       `json:"auto_enabled"`
-	AutoProfile   int                        `json:"auto_profile"`
-	NextID        int64                      `json:"next_id"`
-	EquityPeak    float64                    `json:"equity_peak"`
-	MaxDrawdown   float64                    `json:"max_drawdown"`
-	LastAutoEntry map[string]time.Time       `json:"last_auto_entry"`
+	Version        int                        `json:"version"`
+	Config         SimConfig                  `json:"config"`
+	Cash           float64                    `json:"cash"`
+	Positions      []SimPosition              `json:"positions"`
+	Trades         []SimTrade                 `json:"trades"`
+	Snapshots      map[string][]PriceSnapshot `json:"snapshots"`
+	AutoEnabled    bool                       `json:"auto_enabled"`
+	AutoProfile    int                        `json:"auto_profile"`
+	NextID         int64                      `json:"next_id"`
+	EquityPeak     float64                    `json:"equity_peak"`
+	MaxDrawdown    float64                    `json:"max_drawdown"`
+	LastAutoEntry  map[string]time.Time       `json:"last_auto_entry"`
+	LastShadow     map[string]time.Time       `json:"last_shadow"`
+	ShadowSamples  []ShadowSample             `json:"shadow_samples"`
+	ShadowOutcomes []ShadowOutcome            `json:"shadow_outcomes"`
+	LastEntryStats EntryDiagnostics           `json:"last_entry_stats"`
 }
 
 func NewSimState() *SimState {
 	cfg := DefaultSimConfig()
 	return &SimState{
-		Version: 2, Config: cfg, Cash: cfg.InitialCash, Snapshots: map[string][]PriceSnapshot{},
+		Version: 3, Config: cfg, Cash: cfg.InitialCash, Snapshots: map[string][]PriceSnapshot{},
 		AutoEnabled: true, NextID: 1, EquityPeak: cfg.InitialCash,
-		LastAutoEntry: map[string]time.Time{}, AutoProfile: AutoProfileStandard,
+		LastAutoEntry: map[string]time.Time{}, LastShadow: map[string]time.Time{}, AutoProfile: AutoProfileExplore,
 	}
 }
 
@@ -245,7 +293,13 @@ func (s *SimState) Normalize() {
 	if s.LastAutoEntry == nil {
 		s.LastAutoEntry = map[string]time.Time{}
 	}
-	if s.AutoProfile < AutoProfileConservative || s.AutoProfile > AutoProfileTest {
+	if s.LastShadow == nil {
+		s.LastShadow = map[string]time.Time{}
+	}
+	if s.LastEntryStats.Rejections == nil {
+		s.LastEntryStats.Rejections = map[string]int{}
+	}
+	if s.AutoProfile < AutoProfileConservative || s.AutoProfile > AutoProfileExplore {
 		s.AutoProfile = AutoProfileStandard
 	}
 	for i := range s.Positions {
@@ -277,6 +331,13 @@ func (s *SimState) Normalize() {
 			s.Config.LiquidityDropPct = d.LiquidityDropPct
 		}
 	}
+	if oldVersion < 3 {
+		// V2.11 changes existing accounts to a capped exploration profile. It
+		// remains paper-only and retains hard-risk and excessive-tax blocks; the
+		// user can cycle back to conservative, standard, or test at any time.
+		s.Version = 3
+		s.AutoProfile = AutoProfileExplore
+	}
 }
 
 func normalizeAddress(a string) string { return strings.ToLower(strings.TrimSpace(a)) }
@@ -298,6 +359,7 @@ const (
 	AutoProfileConservative = iota
 	AutoProfileStandard
 	AutoProfileTest
+	AutoProfileExplore
 )
 
 func (s *SimState) ProfileName() string {
@@ -307,6 +369,8 @@ func (s *SimState) ProfileName() string {
 		return "保守"
 	case AutoProfileTest:
 		return "测试"
+	case AutoProfileExplore:
+		return "探索"
 	default:
 		return "标准"
 	}
@@ -314,7 +378,7 @@ func (s *SimState) ProfileName() string {
 
 func (s *SimState) CycleProfile() string {
 	s.Normalize()
-	s.AutoProfile = (s.AutoProfile + 1) % 3
+	s.AutoProfile = (s.AutoProfile + 1) % 4
 	return s.ProfileName()
 }
 
@@ -341,6 +405,11 @@ func (s *SimState) rules() autoRules {
 		return autoRules{80, 50000, 5, 3, 1, 12, 8, true, true, true, 1.25, 6, 8}
 	case AutoProfileTest:
 		return autoRules{55, 10000, 12, 1, 0.2, 20, 5, false, false, false, 1.0, 24, 20}
+	case AutoProfileExplore:
+		// Exploration is deliberately small and short-lived so it can create
+		// useful paper samples from public-data candidates without pretending to
+		// be a production entry rule.
+		return autoRules{15, 5000, 20, 0.5, 0, 30, 2, false, false, false, 0, 48, 25}
 	default:
 		return autoRules{70, 25000, 8, 2, 0.5, 15, 6, true, true, true, 1.15, 12, 12}
 	}
@@ -449,7 +518,7 @@ func (s *SimState) Buy(q SimQuote, amount float64, reason string, now time.Time)
 		CurrentPrice: q.Price, CurrentLiquidity: q.Liquidity,
 		HighestPrice: q.Price, LowestPrice: q.Price, BuyTaxPct: q.BuyTaxPct, SellTaxPct: q.SellTaxPct,
 		EntryScore: q.Score, EntrySecurity: q.Security, LastQuoteAt: q.Time,
-		OpenedAt: now, Automated: strings.HasPrefix(reason, "自动策略："), EntryReason: reason,
+		OpenedAt: now, Automated: strings.HasPrefix(reason, "自动策略："), Exploratory: strings.Contains(reason, "探索档"), EntryReason: reason,
 	}
 	if p.LastQuoteAt.IsZero() {
 		p.LastQuoteAt = now
@@ -475,6 +544,17 @@ func (s *SimState) liquidationValue(p SimPosition, price, liquidity float64) (ne
 		net = 0
 	}
 	return net, fees
+}
+
+func (s *SimState) exitRules(p SimPosition) (stopLoss, take1, take2, trailing, maxHours, trailActivation float64) {
+	stopLoss, take1, take2 = s.Config.StopLossPct, s.Config.TakeProfit1Pct, s.Config.TakeProfit2Pct
+	trailing, maxHours, trailActivation = s.Config.TrailingStopPct, s.Config.MaxHoldingHours, 8
+	if p.Exploratory {
+		// A short paper horizon lets the exploration lane produce complete,
+		// reviewable outcomes overnight without changing the strict strategy.
+		return 5, 6, 10, 5, 0.5, 5
+	}
+	return
 }
 
 func (s *SimState) Sell(positionID int64, fraction float64, q SimQuote, reason string, now time.Time) (SimTrade, error) {
@@ -521,7 +601,7 @@ func (s *SimState) Sell(positionID int64, fraction float64, q SimQuote, reason s
 		Quantity: qty, EntryPrice: p.EntryPrice, ExitPrice: q.Price,
 		CostAllocated: costAllocated, NetProceeds: net, Fees: fees,
 		PnL: pnl, PnLPct: pnlPct, OpenedAt: p.OpenedAt, ClosedAt: now, Reason: reason,
-		Automated: p.Automated,
+		Automated: p.Automated, Exploratory: p.Exploratory,
 	}
 	s.NextID++
 	s.Cash += net
@@ -595,6 +675,7 @@ func (s *SimState) Update(quotes []SimQuote, now time.Time) []string {
 		if p.RemainingCost > 0 {
 			ret = (net - p.RemainingCost) / p.RemainingCost * 100
 		}
+		stopLoss, take1, take2, trailing, maxHours, trailActivation := s.exitRules(p)
 		reason := ""
 		if q.Security == "严重风险" || q.Score <= 0 {
 			reason = "安全状态恶化，紧急退出"
@@ -602,14 +683,14 @@ func (s *SimState) Update(quotes []SimQuote, now time.Time) []string {
 			reason = "质量分较入场下降 20 分"
 		} else if p.EntryLiquidity > 0 && q.Liquidity > 0 && q.Liquidity <= p.EntryLiquidity*(1-s.Config.LiquidityDropPct/100) {
 			reason = "流动性下降达到紧急退出线"
-		} else if ret <= -s.Config.StopLossPct {
-			reason = fmt.Sprintf("止损 %.1f%%", s.Config.StopLossPct)
-		} else if now.Sub(p.OpenedAt).Hours() >= s.Config.MaxHoldingHours {
+		} else if ret <= -stopLoss {
+			reason = fmt.Sprintf("止损 %.1f%%", stopLoss)
+		} else if now.Sub(p.OpenedAt).Hours() >= maxHours {
 			reason = "持仓达到最长时间"
 		} else if p.TP1Done && ret <= 0.5 {
 			reason = "第一止盈后回落至成本保护线"
-		} else if p.HighestPrice >= p.EntryPrice*1.08 && q.Price <= p.HighestPrice*(1-s.Config.TrailingStopPct/100) {
-			reason = fmt.Sprintf("从最高价回撤 %.1f%%", s.Config.TrailingStopPct)
+		} else if p.HighestPrice >= p.EntryPrice*(1+trailActivation/100) && q.Price <= p.HighestPrice*(1-trailing/100) {
+			reason = fmt.Sprintf("从最高价回撤 %.1f%%", trailing)
 		}
 		if reason != "" {
 			if tr, err := s.Sell(id, 1, q, reason, now); err == nil {
@@ -633,18 +714,18 @@ func (s *SimState) Update(quotes []SimQuote, now time.Time) []string {
 		if p.RemainingCost > 0 {
 			ret = (net - p.RemainingCost) / p.RemainingCost * 100
 		}
-		if ret >= s.Config.TakeProfit2Pct {
-			if tr, err := s.Sell(id, 1, q, fmt.Sprintf("止盈 %.1f%%", s.Config.TakeProfit2Pct), now); err == nil {
+		if ret >= take2 {
+			if tr, err := s.Sell(id, 1, q, fmt.Sprintf("止盈 %.1f%%", take2), now); err == nil {
 				events = append(events, fmt.Sprintf("%s 达到第二止盈，净盈亏 %+.2f USDC", tr.Symbol, tr.PnL))
 			}
-		} else if ret >= s.Config.TakeProfit1Pct && !p.TP1Done {
+		} else if ret >= take1 && !p.TP1Done {
 			// Mark first so a failed UI refresh cannot repeat the same partial exit.
 			for i := range s.Positions {
 				if s.Positions[i].ID == id {
 					s.Positions[i].TP1Done = true
 				}
 			}
-			if tr, err := s.Sell(id, 0.5, q, fmt.Sprintf("第一止盈 %.1f%%，卖出一半", s.Config.TakeProfit1Pct), now); err == nil {
+			if tr, err := s.Sell(id, 0.5, q, fmt.Sprintf("第一止盈 %.1f%%，卖出一半", take1), now); err == nil {
 				events = append(events, fmt.Sprintf("%s 第一止盈，净盈亏 %+.2f USDC", tr.Symbol, tr.PnL))
 			}
 		}
@@ -691,7 +772,7 @@ func (s *SimState) autoEligible(q SimQuote, now time.Time) (bool, string) {
 	if q.TaxKnown && (q.BuyTaxPct > r.MaxTaxPct || q.SellTaxPct > r.MaxTaxPct) {
 		return false, "税费过高"
 	}
-	if q.Sells <= 0 || float64(q.Buys)/float64(q.Sells) < r.MinBuySellRatio {
+	if r.MinBuySellRatio > 0 && (q.Sells <= 0 || float64(q.Buys)/float64(q.Sells) < r.MinBuySellRatio) {
 		return false, "买卖强度不足"
 	}
 	if s.hasPositionOn(q.Chain, q.Address) {
@@ -716,7 +797,8 @@ func (s *SimState) autoEligible(q SimQuote, now time.Time) (bool, string) {
 			recent = append(recent, x)
 		}
 	}
-	if len(recent) < r.MinSnapshots || recent[len(recent)-1].Time.Sub(recent[0].Time) < time.Duration(math.Max(0.5, r.ObserveMinutes-0.25)*float64(time.Minute)) {
+	minObservedMinutes := math.Max(0.25, r.ObserveMinutes-0.25)
+	if len(recent) < r.MinSnapshots || recent[len(recent)-1].Time.Sub(recent[0].Time) < time.Duration(minObservedMinutes*float64(time.Minute)) {
 		return false, "观察时间不足"
 	}
 	start, cur := recent[0].Price, recent[len(recent)-1].Price
@@ -780,42 +862,219 @@ func (s *SimState) autoEligible(q SimQuote, now time.Time) (bool, string) {
 	return true, fmt.Sprintf("%s档：满足基础趋势条件", s.ProfileName())
 }
 
+func (d EntryDiagnostics) TopReasons(limit int) string {
+	if len(d.Rejections) == 0 {
+		return "暂无拒绝记录"
+	}
+	type item struct {
+		name  string
+		count int
+	}
+	items := make([]item, 0, len(d.Rejections))
+	for name, count := range d.Rejections {
+		if count > 0 {
+			items = append(items, item{name: name, count: count})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].count == items[j].count {
+			return items[i].name < items[j].name
+		}
+		return items[i].count > items[j].count
+	})
+	if limit <= 0 || limit > len(items) {
+		limit = len(items)
+	}
+	parts := make([]string, 0, limit)
+	for _, it := range items[:limit] {
+		parts = append(parts, fmt.Sprintf("%s %d", it.name, it.count))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (s *SimState) startShadow(q SimQuote, rejection string, now time.Time) bool {
+	if q.Price <= 0 || q.Liquidity < 5000 || q.Score < 10 || q.Score <= 0 || q.Security == "严重风险" {
+		return false
+	}
+	if !q.Time.IsZero() && now.Sub(q.Time) > 90*time.Second {
+		return false
+	}
+	if q.TaxKnown && (q.BuyTaxPct > 20 || q.SellTaxPct > 20) {
+		return false
+	}
+	switch rejection {
+	case "严重风险或已淘汰", "行情数据已过期", "流动性或价格不足", "已有持仓", "同一链已有自动风险敞口", "冷却中":
+		return false
+	}
+	if len(s.ShadowSamples) >= 12 {
+		return false
+	}
+	key := simKey(q.Chain, q.Address)
+	for _, sample := range s.ShadowSamples {
+		if simKey(sample.Chain, sample.Address) == key {
+			return false
+		}
+	}
+	if last := s.LastShadow[key]; !last.IsZero() && now.Sub(last) < 30*time.Minute {
+		return false
+	}
+	s.ShadowSamples = append(s.ShadowSamples, ShadowSample{
+		ID: s.NextID, Chain: normalizeChain(q.Chain), Address: normalizeAddress(q.Address), Symbol: q.Symbol,
+		EntryPrice: q.Price, CurrentPrice: q.Price, EntryLiquidity: q.Liquidity, Score: q.Score,
+		OpenedAt: now, LastQuoteAt: q.Time, Reason: rejection,
+	})
+	s.NextID++
+	s.LastShadow[key] = now
+	return true
+}
+
+// UpdateShadows evaluates near-misses without allocating paper cash. It closes
+// an observation after 30 minutes or a material move, producing research data
+// that is intentionally excluded from simulated P&L and validation.
+func (s *SimState) UpdateShadows(quotes []SimQuote, now time.Time) []string {
+	s.Normalize()
+	if len(s.ShadowSamples) == 0 {
+		return nil
+	}
+	qm := quoteMap(quotes)
+	active := make([]ShadowSample, 0, len(s.ShadowSamples))
+	events := []string{}
+	for _, sample := range s.ShadowSamples {
+		q, found := qm[simKey(sample.Chain, sample.Address)]
+		if found && q.Price > 0 {
+			sample.CurrentPrice = q.Price
+			sample.LastQuoteAt = q.Time
+			if sample.LastQuoteAt.IsZero() {
+				sample.LastQuoteAt = now
+			}
+		}
+		exitPrice := sample.CurrentPrice
+		if exitPrice <= 0 {
+			exitPrice = sample.EntryPrice
+		}
+		ret := 0.0
+		if sample.EntryPrice > 0 {
+			ret = (exitPrice/sample.EntryPrice - 1) * 100
+		}
+		reason := ""
+		if found && q.Security == "严重风险" {
+			reason = "安全状态恶化"
+		} else if ret <= -12 {
+			reason = "影子止损"
+		} else if ret >= 15 {
+			reason = "影子止盈"
+		} else if now.Sub(sample.OpenedAt) >= 30*time.Minute {
+			reason = "观察窗口完成"
+		}
+		if reason == "" {
+			active = append(active, sample)
+			continue
+		}
+		s.ShadowOutcomes = append(s.ShadowOutcomes, ShadowOutcome{
+			ID: sample.ID, Chain: sample.Chain, Address: sample.Address, Symbol: sample.Symbol, Score: sample.Score,
+			EntryPrice: sample.EntryPrice, ExitPrice: exitPrice, PnLPct: ret, OpenedAt: sample.OpenedAt, ClosedAt: now, Reason: reason,
+		})
+		events = append(events, fmt.Sprintf("影子样本 %s %s，理论变动 %+.1f%%", sample.Symbol, reason, ret))
+	}
+	s.ShadowSamples = active
+	if len(s.ShadowOutcomes) > 500 {
+		s.ShadowOutcomes = append([]ShadowOutcome(nil), s.ShadowOutcomes[len(s.ShadowOutcomes)-500:]...)
+	}
+	return events
+}
+
+func (s *SimState) ShadowSummary() (active, closed, wins int, average float64) {
+	active = len(s.ShadowSamples)
+	closed = len(s.ShadowOutcomes)
+	if closed == 0 {
+		return
+	}
+	for _, outcome := range s.ShadowOutcomes {
+		average += outcome.PnLPct
+		if outcome.PnLPct > 0 {
+			wins++
+		}
+	}
+	average /= float64(closed)
+	return
+}
+
+func (s *SimState) ExplorationSummary() (active, closed int, netPnL float64) {
+	open := map[int64]bool{}
+	for _, p := range s.Positions {
+		if p.Exploratory {
+			active++
+			open[p.ID] = true
+		}
+	}
+	byID := map[int64]float64{}
+	for _, trade := range s.Trades {
+		if trade.Exploratory && !open[trade.PositionID] {
+			byID[trade.PositionID] += trade.PnL
+		}
+	}
+	for _, pnl := range byID {
+		closed++
+		netPnL += pnl
+	}
+	return
+}
+
 func (s *SimState) AutoEvaluate(quotes []SimQuote, now time.Time) []string {
 	s.Normalize()
+	stats := EntryDiagnostics{UpdatedAt: now, Rejections: map[string]int{}}
 	if !s.AutoEnabled {
+		s.LastEntryStats = stats
 		return nil
 	}
 	if len(s.Positions) >= s.Config.MaxPositions {
+		stats.Rejections["达到最大持仓"] = len(quotes)
+		s.LastEntryStats = stats
 		return nil
 	}
 	if s.dailyRealized(now) <= -s.Config.DailyLossLimit {
+		stats.Rejections["达到每日亏损上限"] = len(quotes)
+		s.LastEntryStats = stats
 		return []string{"今日模拟亏损达到上限，自动策略暂停开仓"}
 	}
 	if paused, remain := s.riskPause(now); paused {
+		stats.Rejections["连续亏损熔断"] = len(quotes)
+		s.LastEntryStats = stats
 		return []string{fmt.Sprintf("连续亏损熔断，剩余 %.0f 分钟", math.Ceil(remain.Minutes()))}
 	}
 	sorted := append([]SimQuote(nil), quotes...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Score > sorted[j].Score })
 	events := []string{}
 	for _, q := range sorted {
+		stats.Evaluated++
 		if len(s.Positions) >= s.Config.MaxPositions || s.Cash < 1 {
+			stats.Rejections["达到最大持仓或余额不足"]++
 			break
 		}
 		ok, reason := s.autoEligible(q, now)
 		if !ok {
+			stats.Rejections[reason]++
+			if s.startShadow(q, reason, now) {
+				stats.ShadowStarted++
+			}
 			continue
 		}
+		stats.Eligible++
 		amount := s.dynamicPositionSize(q)
 		if amount <= 0 {
+			stats.Rejections["动态仓位低于最小模拟金额"]++
 			continue
 		}
 		p, err := s.Buy(q, amount, "自动策略："+reason, now)
 		if err != nil {
+			stats.Rejections["模拟成交失败："+shortErr(err)]++
 			continue
 		}
 		s.LastAutoEntry[simKey(q.Chain, q.Address)] = now
+		stats.Opened++
 		events = append(events, fmt.Sprintf("自动模拟买入 %s，仓位 %.2f USDC", p.Symbol, p.EntryCost))
 	}
+	s.LastEntryStats = stats
 	return events
 }
 

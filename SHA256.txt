@@ -1,1 +1,1 @@
-50e468e04c8e7264b985fca5493c4f635f3ee6e9504430ad23ef71dba1e08422  MultiChainTokenRadar_V2.10.0_Windows_x64.zip
+911f70dadf3c6ec0bba94fe555e83480b982bf69140dbcd183b8c068617df912  MultiChainTokenRadar_V2.11.0_Windows_x64.zip
