@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestVersionNewer(t *testing.T) {
 	for _, tc := range []struct {
@@ -25,5 +28,21 @@ func TestExtractChecksum(t *testing.T) {
 	got, err := extractChecksum([]byte(value + "  MultiChainTokenRadar_Windows_x64.zip"))
 	if err != nil || got != value {
 		t.Fatalf("checksum parse failed: got=%q err=%v", got, err)
+	}
+}
+
+func TestUpdateScriptRetainsBackupAndRetriesFileLocks(t *testing.T) {
+	script := buildUpdateScript(`C:\\Program Files\\Radar\\Radar.exe`, `C:\\Users\\u\\AppData\\Local\\Radar\\staged.exe`, `C:\\Users\\u\\AppData\\Local\\Radar\\stage`)
+	for _, want := range []string{
+		".preupdate.bak",
+		":backup_retry",
+		":replace",
+		"if %RETRY% GEQ 10 goto restore",
+		"copy /y \"%BACKUP%\" \"%TARGET%\"",
+		"start \"\" \"%TARGET%\"",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("update script missing %q:\n%s", want, script)
+		}
 	}
 }

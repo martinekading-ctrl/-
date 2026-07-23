@@ -21,7 +21,7 @@ import (
 	"unsafe"
 )
 
-const appVersion = "2.9.0"
+const appVersion = "2.21.1"
 
 type updateSettings struct {
 	GitHubRepository string `json:"github_repository"`
@@ -355,19 +355,60 @@ func stageUpdate(ctx context.Context, info updateInfo) error {
 }
 
 func launchUpdateScript(exePath, stagedExe, stageDir string) error {
-	quote := func(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 	scriptPath := filepath.Join(stageDir, "apply-update.cmd")
-	script := "@echo off\r\n" +
-		"timeout /t 2 /nobreak >nul\r\n" +
-		"copy /y " + quote(stagedExe) + " " + quote(exePath) + " >nul\r\n" +
-		"start \"\" " + quote(exePath) + "\r\n" +
-		"rmdir /s /q " + quote(stageDir) + "\r\n"
+	script := buildUpdateScript(exePath, stagedExe, stageDir)
 	if err := os.WriteFile(scriptPath, []byte(script), 0700); err != nil {
 		return err
 	}
+	quote := func(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 	result, _, callErr := pShellExecuteW.Call(0, uintptr(unsafe.Pointer(utf16Ptr("open"))), uintptr(unsafe.Pointer(utf16Ptr("cmd.exe"))), uintptr(unsafe.Pointer(utf16Ptr("/c "+quote(scriptPath)))), 0, SW_SHOWNORMAL)
 	if result <= 32 {
 		return fmt.Errorf("could not start updater: %v", callErr)
 	}
 	return nil
+}
+
+// buildUpdateScript keeps the previously running executable as a sibling
+// backup. Windows can hold an .exe open briefly after WM_CLOSE, so each file
+// operation is retried instead of turning a transient file lock into a
+// half-installed application. The backup is retained for manual recovery if a
+// new build cannot start on a particular machine.
+func buildUpdateScript(exePath, stagedExe, stageDir string) string {
+	quote := func(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
+	backupPath := exePath + ".preupdate.bak"
+	return "@echo off\r\n" +
+		"setlocal EnableExtensions DisableDelayedExpansion\r\n" +
+		"set \"TARGET=" + strings.ReplaceAll(exePath, `"`, `""`) + "\"\r\n" +
+		"set \"STAGED=" + strings.ReplaceAll(stagedExe, `"`, `""`) + "\"\r\n" +
+		"set \"BACKUP=" + strings.ReplaceAll(backupPath, `"`, `""`) + "\"\r\n" +
+		"timeout /t 2 /nobreak >nul\r\n" +
+		"set /a RETRY=0\r\n" +
+		":backup_retry\r\n" +
+		"copy /y \"%TARGET%\" \"%BACKUP%\" >nul\r\n" +
+		"if not errorlevel 1 goto replace_retry\r\n" +
+		"set /a RETRY+=1\r\n" +
+		"if %RETRY% GEQ 10 goto failed\r\n" +
+		"timeout /t 1 /nobreak >nul\r\n" +
+		"goto backup_retry\r\n" +
+		":replace_retry\r\n" +
+		"set /a RETRY=0\r\n" +
+		":replace\r\n" +
+		"copy /y \"%STAGED%\" \"%TARGET%\" >nul\r\n" +
+		"if not errorlevel 1 goto launch\r\n" +
+		"set /a RETRY+=1\r\n" +
+		"if %RETRY% GEQ 10 goto restore\r\n" +
+		"timeout /t 1 /nobreak >nul\r\n" +
+		"goto replace\r\n" +
+		":restore\r\n" +
+		"copy /y \"%BACKUP%\" \"%TARGET%\" >nul\r\n" +
+		"goto failed\r\n" +
+		":launch\r\n" +
+		"start \"\" \"%TARGET%\"\r\n" +
+		"if errorlevel 1 goto restore\r\n" +
+		"rmdir /s /q " + quote(stageDir) + "\r\n" +
+		"endlocal\r\n" +
+		"exit /b 0\r\n" +
+		":failed\r\n" +
+		"endlocal\r\n" +
+		"exit /b 1\r\n"
 }

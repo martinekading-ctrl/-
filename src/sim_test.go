@@ -6,7 +6,7 @@ import (
 )
 
 func testQuote(price float64) SimQuote {
-	return SimQuote{Address: "0x1111111111111111111111111111111111111111", Symbol: "TST", Name: "Test", Price: price, Liquidity: 100000, Score: 90, Security: "已验证", Buys: 200, Sells: 100, Time: time.Now()}
+	return SimQuote{Address: "0x1111111111111111111111111111111111111111", Symbol: "TST", Name: "Test", Price: price, Liquidity: 100000, Score: 90, Security: "已验证", PotentialEligible: true, Buys: 200, Sells: 100, Time: time.Now()}
 }
 
 func TestBuyAndManualSellIncludeCosts(t *testing.T) {
@@ -17,7 +17,7 @@ func TestBuyAndManualSellIncludeCosts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !(p.Quantity < 5 && s.Cash == 95) {
+	if !(p.Quantity < 5 && s.Cash == 995) {
 		t.Fatalf("unexpected buy qty=%v cash=%v", p.Quantity, s.Cash)
 	}
 	tr, err := s.Sell(p.ID, 1, q, "manual", now.Add(time.Minute))
@@ -29,6 +29,18 @@ func TestBuyAndManualSellIncludeCosts(t *testing.T) {
 	}
 	if len(s.Positions) != 0 || len(s.Trades) != 1 {
 		t.Fatal("position/trade accounting failed")
+	}
+}
+
+func TestBuyRejectsReadOnlyReviewCandidate(t *testing.T) {
+	s := NewSimState()
+	q := testQuote(1)
+	q.PotentialEligible = false
+	if _, err := s.Buy(q, 5, "manual", time.Now()); err == nil {
+		t.Fatal("read-only review candidate must never open a paper position")
+	}
+	if len(s.Positions) != 0 {
+		t.Fatal("rejected buy must not create a position")
 	}
 }
 
@@ -48,23 +60,59 @@ func TestStopLossClosesPosition(t *testing.T) {
 	}
 }
 
-func TestTakeProfitPartialThenFinal(t *testing.T) {
+func TestThreeStageTakeProfitAndRunner(t *testing.T) {
 	s := NewSimState()
 	s.Config.BaseSlippagePct = 0.01
 	s.Config.DexFeePct = 0.01
 	s.Config.GasUSDC = 0.0001
+	s.Config.StopLossPct = 50
+	s.Config.TakeProfit1Pct = 10
+	s.Config.TakeProfit2Pct = 20
+	s.Config.TakeProfit3Pct = 30
+	s.Config.TrailingStopPct = 90
+	s.Config.TrailActivationPct = 95
+	s.Config.MaxHoldingHours = 24
 	now := time.Now()
 	p, err := s.Buy(testQuote(1), 5, "manual", now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Update([]SimQuote{testQuote(1.16)}, now.Add(time.Minute))
-	if len(s.Positions) != 1 || !s.Positions[0].TP1Done || !(s.Positions[0].Quantity < p.Quantity) {
+	if len(s.Positions) != 1 || !s.Positions[0].TP1Done || s.Positions[0].TP2Done || !(s.Positions[0].Quantity < p.Quantity) {
 		t.Fatalf("tp1 failed: %+v", s.Positions)
 	}
 	s.Update([]SimQuote{testQuote(1.30)}, now.Add(2*time.Minute))
-	if len(s.Positions) != 0 || len(s.Trades) != 2 {
-		t.Fatalf("tp2 failed: positions=%d trades=%d", len(s.Positions), len(s.Trades))
+	if len(s.Positions) != 1 || !s.Positions[0].TP2Done || len(s.Trades) != 2 {
+		t.Fatalf("tp2 failed: positions=%d trades=%+v", len(s.Positions), s.Trades)
+	}
+	if got := s.Positions[0].Quantity / p.InitialQuantity; got < 0.29 || got > 0.31 {
+		t.Fatalf("runner quantity = %.3f, want 30%%", got)
+	}
+	s.Update([]SimQuote{testQuote(1.50)}, now.Add(3*time.Minute))
+	if len(s.Positions) != 0 || len(s.Trades) != 3 {
+		t.Fatalf("tp3 failed: positions=%d trades=%d", len(s.Positions), len(s.Trades))
+	}
+}
+
+func TestValidationAccountDefaults(t *testing.T) {
+	s := NewSimState()
+	if s.AutoProfile != AutoProfileValidation || s.Config.InitialCash != 1000 || s.Config.PositionSize != 20 || s.Config.DailyLossLimit != 30 {
+		t.Fatalf("unexpected validation defaults: profile=%d config=%+v", s.AutoProfile, s.Config)
+	}
+	if s.Config.StopLossPct != 12 || s.Config.TakeProfit1Pct != 30 || s.Config.TakeProfit2Pct != 60 || s.Config.TakeProfit3Pct != 100 || s.Config.TrailingStopPct != 18 {
+		t.Fatalf("unexpected validation exits: %+v", s.Config)
+	}
+}
+
+func TestResetCreatesFreshValidationAccount(t *testing.T) {
+	s := NewSimState()
+	s.Cash = 17
+	s.Positions = []SimPosition{{ID: 1}}
+	s.Trades = []SimTrade{{ID: 2}}
+	s.Snapshots["base|old"] = []PriceSnapshot{{Time: time.Now(), Price: 1}}
+	s.Reset()
+	if s.Cash != 1000 || s.AutoProfile != AutoProfileValidation || len(s.Positions) != 0 || len(s.Trades) != 0 || len(s.Snapshots) != 0 {
+		t.Fatalf("reset did not create a fresh validation account: %+v", s)
 	}
 }
 
@@ -72,10 +120,20 @@ func TestDailyLossLimitBlocksAutoEntry(t *testing.T) {
 	s := NewSimState()
 	s.AutoEnabled = true
 	now := time.Now()
-	s.Trades = append(s.Trades, SimTrade{PnL: -6, ClosedAt: now})
+	s.Trades = append(s.Trades, SimTrade{PnL: -31, ClosedAt: now})
 	events := s.AutoEvaluate([]SimQuote{testQuote(1)}, now)
 	if len(events) == 0 || len(s.Positions) != 0 {
 		t.Fatal("daily loss limit not enforced")
+	}
+}
+
+func TestAutoStrategyRequiresStrictMarketFirstEligibility(t *testing.T) {
+	s := NewSimState()
+	s.AutoEnabled = true
+	q := testQuote(1)
+	q.PotentialEligible = false
+	if events := s.AutoEvaluate([]SimQuote{q}, time.Now()); len(events) != 0 || len(s.Positions) != 0 {
+		t.Fatalf("unqualified market candidate must never open a paper position: %v", events)
 	}
 }
 
@@ -155,10 +213,11 @@ func TestValidationGroupsPartialExitsByCompletePosition(t *testing.T) {
 	s.Config.MinValidationTrades = 2
 	s.MaxDrawdown = 5
 	now := time.Now()
+	fingerprint := s.strategyFingerprint()
 	s.Trades = []SimTrade{
-		{PositionID: 10, PnL: 0.30, CostAllocated: 2.5, ClosedAt: now.Add(-3 * time.Minute), Automated: true},
-		{PositionID: 10, PnL: 0.20, CostAllocated: 2.5, ClosedAt: now.Add(-2 * time.Minute), Automated: true},
-		{PositionID: 11, PnL: -0.25, CostAllocated: 5, ClosedAt: now.Add(-time.Minute), Automated: true},
+		{PositionID: 10, PnL: 0.30, CostAllocated: 2.5, ClosedAt: now.Add(-3 * time.Minute), Automated: true, ValidationEligible: true, StrategyFingerprint: fingerprint},
+		{PositionID: 10, PnL: 0.20, CostAllocated: 2.5, ClosedAt: now.Add(-2 * time.Minute), Automated: true, ValidationEligible: true, StrategyFingerprint: fingerprint},
+		{PositionID: 11, PnL: -0.25, CostAllocated: 5, ClosedAt: now.Add(-time.Minute), Automated: true, ValidationEligible: true, StrategyFingerprint: fingerprint},
 		{PositionID: 12, PnL: 99, CostAllocated: 5, ClosedAt: now, Automated: false},
 	}
 	v := s.Validation()
@@ -181,10 +240,12 @@ func TestValidationExcludesStillOpenAutomatedPosition(t *testing.T) {
 
 func TestConsecutiveLossesTriggerPaperCircuitBreaker(t *testing.T) {
 	s := NewSimState()
+	s.AutoEnabled = true
 	s.Config.DailyLossLimit = 10
 	now := time.Now()
+	fingerprint := s.strategyFingerprint()
 	for i := int64(1); i <= 3; i++ {
-		s.Trades = append(s.Trades, SimTrade{PositionID: i, PnL: -0.2, ClosedAt: now.Add(time.Duration(i-3) * time.Minute), Automated: true})
+		s.Trades = append(s.Trades, SimTrade{PositionID: i, PnL: -0.2, ClosedAt: now.Add(time.Duration(i-3) * time.Minute), Automated: true, ValidationEligible: true, StrategyFingerprint: fingerprint})
 	}
 	events := s.AutoEvaluate([]SimQuote{testQuote(1)}, now)
 	if len(events) == 0 || len(s.Positions) != 0 {
@@ -192,16 +253,91 @@ func TestConsecutiveLossesTriggerPaperCircuitBreaker(t *testing.T) {
 	}
 }
 
-func TestV28MigrationEnablesOnlyPaperAutomation(t *testing.T) {
+func TestV219MigrationPausesExistingPaperAutomationForQuoteIntegrity(t *testing.T) {
 	s := &SimState{Version: 1, Config: DefaultSimConfig(), Cash: 100}
 	s.Config.MaxHoldingHours = 24
 	s.Config.LiquidityDropPct = 30
 	s.Normalize()
-	if s.Version != 2 || !s.AutoEnabled {
-		t.Fatalf("expected V2.8 paper migration: version=%d auto=%v", s.Version, s.AutoEnabled)
+	if s.Version != 6 || s.AutoEnabled || s.AutoProfile != AutoProfileExplore {
+		t.Fatalf("expected current paper-only migration: version=%d auto=%v profile=%d", s.Version, s.AutoEnabled, s.AutoProfile)
 	}
-	if s.Config.MaxHoldingHours != 6 || s.Config.LiquidityDropPct != 25 {
+	if s.Config.MaxHoldingHours != 2 || s.Config.LiquidityDropPct != 25 {
 		t.Fatalf("expected V2.8 risk defaults: %+v", s.Config)
+	}
+}
+
+func TestExploreProfileCreatesCappedPaperSampleAndClosesIt(t *testing.T) {
+	s := NewSimState()
+	s.AutoEnabled = true
+	s.AutoProfile = AutoProfileExplore
+	now := time.Now()
+	q := testQuote(1.03)
+	q.Chain = "base"
+	q.Score = 15
+	q.Liquidity = 6000
+	q.Security = "安全未验证"
+	q.TaxKnown = false
+	q.Buys, q.Sells = 1, 0
+	q.Time = now
+	key := simKey(q.Chain, q.Address)
+	for i, px := range []float64{1.00, 1.01, 1.02, 1.03} {
+		s.Snapshots[key] = append(s.Snapshots[key], PriceSnapshot{Time: now.Add(time.Duration(-30+i*10) * time.Second), Price: px, Liquidity: q.Liquidity})
+	}
+	if events := s.AutoEvaluate([]SimQuote{q}, now); len(events) == 0 || len(s.Positions) != 1 {
+		t.Fatalf("explore profile should create a paper sample: events=%v positions=%d", events, len(s.Positions))
+	}
+	p := s.Positions[0]
+	if !p.Exploratory || p.EntryCost > 1 {
+		t.Fatalf("explore position must be flagged and capped: %+v", p)
+	}
+	q.Time = now.Add(31 * time.Minute)
+	if events := s.Update([]SimQuote{q}, q.Time); len(events) == 0 || len(s.Positions) != 0 || len(s.Trades) != 1 || !s.Trades[0].Exploratory {
+		t.Fatalf("explore sample should close on its short horizon: events=%v positions=%d trades=%+v", events, len(s.Positions), s.Trades)
+	}
+	if v := s.Validation(); v.ClosedPositions != 0 {
+		t.Fatalf("explore samples must not be counted as strict validation: %+v", v)
+	}
+}
+
+func TestNearMissCreatesAndClosesShadowSample(t *testing.T) {
+	s := NewSimState()
+	s.AutoEnabled = true
+	s.AutoProfile = AutoProfileExplore
+	now := time.Now()
+	q := testQuote(1)
+	q.Score = 14
+	q.Liquidity = 7000
+	q.Security = "安全未验证"
+	q.TaxKnown = false
+	q.Time = now
+	s.AutoEvaluate([]SimQuote{q}, now)
+	if len(s.ShadowSamples) != 1 || s.LastEntryStats.Rejections["评分不足"] != 1 || s.LastEntryStats.ShadowStarted != 1 {
+		t.Fatalf("near miss should be diagnosed and shadowed: stats=%+v shadows=%+v", s.LastEntryStats, s.ShadowSamples)
+	}
+	q.Price = 1.05
+	q.Time = now.Add(31 * time.Minute)
+	if events := s.UpdateShadows([]SimQuote{q}, q.Time); len(events) == 0 || len(s.ShadowSamples) != 0 || len(s.ShadowOutcomes) != 1 {
+		t.Fatalf("shadow sample should close into research telemetry: events=%v active=%d outcomes=%d", events, len(s.ShadowSamples), len(s.ShadowOutcomes))
+	}
+}
+
+func TestFunnelReviewTracksRejectedCandidateWithoutPaperTrade(t *testing.T) {
+	s := NewSimState()
+	now := time.Now()
+	q := FunnelReviewQuote{Chain: "base", Address: "0x1111111111111111111111111111111111111111", Symbol: "SKIP", Price: 1, Liquidity: 20_000, Stage: "淘汰：近 1 小时买入笔数不足", Security: "已验证", Time: now}
+	if events := s.ObserveFunnelReviews([]FunnelReviewQuote{q}, now); len(events) != 0 {
+		t.Fatalf("opening a review must not create a close event: %v", events)
+	}
+	if len(s.FunnelSamples) != 1 || len(s.Positions) != 0 || len(s.Trades) != 0 {
+		t.Fatalf("funnel review must not allocate paper cash: samples=%d positions=%d trades=%d", len(s.FunnelSamples), len(s.Positions), len(s.Trades))
+	}
+	q.Price = 1.25
+	q.Time = now.Add(61 * time.Minute)
+	if events := s.ObserveFunnelReviews([]FunnelReviewQuote{q}, q.Time); len(events) != 1 {
+		t.Fatalf("expected completed funnel review, got %v", events)
+	}
+	if len(s.FunnelSamples) != 0 || len(s.FunnelOutcomes) != 1 || s.FunnelOutcomes[0].PriceChangePct < 24.9 {
+		t.Fatalf("unexpected funnel outcome: %+v", s.FunnelOutcomes)
 	}
 }
 
@@ -241,5 +377,83 @@ func TestSecurityDeteriorationForcesExit(t *testing.T) {
 	s.Update([]SimQuote{bad}, now.Add(time.Minute))
 	if len(s.Positions) != 0 || len(s.Trades) != 1 || s.Trades[0].PositionID != p.ID {
 		t.Fatalf("security deterioration must exit: positions=%d trades=%+v", len(s.Positions), s.Trades)
+	}
+}
+
+func TestQuoteInterruptionPausesAutomationWithoutInventingAnExit(t *testing.T) {
+	s := NewSimState()
+	s.AutoEnabled = true
+	now := time.Now()
+	q := testQuote(1)
+	q.Chain = "base"
+	q.PoolAddress = "0x2222222222222222222222222222222222222222"
+	p, err := s.Buy(q, 5, "自动策略：test", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events := s.Update(nil, now.Add(time.Minute))
+	if len(s.Positions) != 1 || len(s.Trades) != 0 {
+		t.Fatalf("missing quote must not fabricate a sale: positions=%d trades=%+v", len(s.Positions), s.Trades)
+	}
+	if !s.QuoteSafetyPaused || s.Positions[0].QuoteInterruptedAt.IsZero() {
+		t.Fatalf("missing quote must enter the persisted safety state: %+v", s)
+	}
+	if len(events) == 0 {
+		t.Fatal("quote interruption must be visible as an event")
+	}
+	if next := testQuote(1.02); len(s.AutoEvaluate([]SimQuote{next}, now.Add(2*time.Minute))) != 0 || s.LastEntryStats.Rejections["持仓报价完整性保护"] == 0 {
+		t.Fatalf("automatic entries must be paused while a position is unpriced: stats=%+v", s.LastEntryStats)
+	}
+
+	q.Price = 1.02
+	q.Time = now.Add(3 * time.Minute)
+	s.Update([]SimQuote{q}, q.Time)
+	if s.QuoteSafetyPaused || !s.Positions[0].QuoteInterruptedAt.IsZero() {
+		t.Fatalf("a fresh exact-pool quote must clear only the quote-integrity pause: %+v", s.Positions[0])
+	}
+	if s.Positions[0].PoolAddress != p.PoolAddress {
+		t.Fatalf("position lost its exact entry pool: got %s want %s", s.Positions[0].PoolAddress, p.PoolAddress)
+	}
+}
+
+func TestConstantProductImpactRejectsUnexecutablePaperEntry(t *testing.T) {
+	s := NewSimState()
+	q := testQuote(1)
+	q.Liquidity = 100
+	if _, err := s.Buy(q, 20, "manual", time.Now()); err == nil {
+		t.Fatal("paper entry with impact above the configured maximum must be rejected")
+	}
+	if got := s.slippagePct(20, 10_000); got < 1.19 || got > 1.21 {
+		t.Fatalf("constant-product approximation should use one pool side, got %.3f%%", got)
+	}
+}
+
+func TestV219MigrationExcludesLegacyTradesFromValidation(t *testing.T) {
+	now := time.Now()
+	s := &SimState{
+		Version: 4, Config: DefaultSimConfig(), Cash: 1000,
+		Trades: []SimTrade{{PositionID: 1, PnL: 50, CostAllocated: 20, ClosedAt: now, Automated: true}},
+	}
+	s.Normalize()
+	if s.AutoEnabled || s.Trades[0].ValidationEligible {
+		t.Fatalf("legacy account must be paused and excluded from validation: %+v", s)
+	}
+	if got := s.Validation().ClosedPositions; got != 0 {
+		t.Fatalf("legacy paper result must not be counted by hardened validation, got %d", got)
+	}
+}
+
+func TestValidationDoesNotMixDifferentStrategyFingerprints(t *testing.T) {
+	s := NewSimState()
+	s.Config.MinValidationTrades = 1
+	before := s.strategyFingerprint()
+	s.Trades = []SimTrade{{PositionID: 1, PnL: 5, CostAllocated: 20, ClosedAt: time.Now(), Automated: true, ValidationEligible: true, StrategyFingerprint: before}}
+	if got := s.Validation().ClosedPositions; got != 1 {
+		t.Fatalf("current strategy result should count, got %d", got)
+	}
+	s.Config.StopLossPct++
+	if got := s.Validation().ClosedPositions; got != 0 {
+		t.Fatalf("changed strategy parameters must start a separate validation epoch, got %d", got)
 	}
 }

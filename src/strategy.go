@@ -35,14 +35,23 @@ type simPositionOutcome struct {
 	ClosedAt   time.Time
 }
 
+// strategyFingerprint makes validation fail closed when the operator changes a
+// meaningful rule mid-sample. It is deliberately readable in exported JSON so
+// results can be grouped and audited without treating a hash as magic.
+func (s *SimState) strategyFingerprint() string {
+	c := s.Config
+	return fmt.Sprintf("v2.20|profile=%d|size=%.2f|maxpos=%d|stop=%.2f|tp=%.2f/%.2f/%.2f|trail=%.2f/%.2f|liqdrop=%.2f|maxhours=%.2f|fee=%.3f|gas=%.3f|baseSlip=%.3f|maxSlip=%.2f|minScore=%d|minLiq=%.2f|maxTax=%.2f|observe=%.2f", s.AutoProfile, c.PositionSize, c.MaxPositions, c.StopLossPct, c.TakeProfit1Pct, c.TakeProfit2Pct, c.TakeProfit3Pct, c.TrailingStopPct, c.TrailActivationPct, c.LiquidityDropPct, c.MaxHoldingHours, c.DexFeePct, c.GasUSDC, c.BaseSlippagePct, c.MaxSlippagePct, c.MinScore, c.MinLiquidity, c.MaxTaxPct, c.ObserveMinutes)
+}
+
 func (s *SimState) automatedOutcomes() []simPositionOutcome {
 	open := make(map[int64]bool, len(s.Positions))
 	for _, p := range s.Positions {
 		open[p.ID] = true
 	}
 	byID := map[int64]simPositionOutcome{}
+	currentStrategy := s.strategyFingerprint()
 	for _, tr := range s.Trades {
-		if !tr.Automated || open[tr.PositionID] {
+		if !tr.Automated || tr.Exploratory || !tr.ValidationEligible || tr.StrategyFingerprint != currentStrategy || open[tr.PositionID] {
 			continue
 		}
 		o := byID[tr.PositionID]
@@ -137,9 +146,14 @@ func (s *SimState) riskPause(now time.Time) (bool, time.Duration) {
 
 func (s *SimState) dynamicPositionSize(q SimQuote) float64 {
 	amount := math.Min(s.Config.PositionSize, s.Cash)
-	// At most two basis points of observed pool liquidity. This keeps the paper
-	// fill from pretending a thin pool can absorb the same size as a deep pool.
-	if liquidityCap := q.Liquidity * 0.0002; liquidityCap > 0 {
+	if s.AutoProfile == AutoProfileExplore {
+		// Exploration is for collecting paper evidence, not for scaling a bet.
+		amount = math.Min(amount, 1)
+	}
+	// At most twenty basis points of observed pool liquidity. This is still a
+	// deliberately small paper fill, while allowing the 20-USDC validation
+	// position when a strict candidate has the 10,000-USDC minimum liquidity.
+	if liquidityCap := q.Liquidity * 0.002; liquidityCap > 0 {
 		amount = math.Min(amount, liquidityCap)
 	}
 	streak := s.Validation().ConsecutiveLosses

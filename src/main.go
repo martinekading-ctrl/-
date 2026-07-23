@@ -114,6 +114,7 @@ var (
 	pBeginPaint                    = user32.NewProc("BeginPaint")
 	pEndPaint                      = user32.NewProc("EndPaint")
 	pGetClientRect                 = user32.NewProc("GetClientRect")
+	pScreenToClient                = user32.NewProc("ScreenToClient")
 	pInvalidateRect                = user32.NewProc("InvalidateRect")
 	pPostMessageW                  = user32.NewProc("PostMessageW")
 	pSetTimer                      = user32.NewProc("SetTimer")
@@ -175,27 +176,28 @@ const (
 	CW_USEDEFAULT       = ^uintptr(0x7fffffff)
 	SW_MAXIMIZE         = 3
 
-	WM_CREATE        = 0x0001
-	WM_DESTROY       = 0x0002
-	WM_SIZE          = 0x0005
-	WM_PAINT         = 0x000F
-	WM_CLOSE         = 0x0010
-	WM_ERASEBKGND    = 0x0014
-	WM_SETCURSOR     = 0x0020
-	WM_GETMINMAXINFO = 0x0024
-	WM_KEYDOWN       = 0x0100
-	WM_CHAR          = 0x0102
-	WM_TIMER         = 0x0113
-	WM_MOUSEMOVE     = 0x0200
-	WM_LBUTTONDOWN   = 0x0201
-	WM_LBUTTONUP     = 0x0202
-	WM_MOUSEWHEEL    = 0x020A
-	WM_MOUSELEAVE    = 0x02A3
-	WM_DPICHANGED    = 0x02E0
-	WM_APP           = 0x8000
-	WM_SCAN_DONE     = WM_APP + 1
-	WM_DIAG_DONE     = WM_APP + 2
-	WM_UPDATE_DONE   = WM_APP + 3
+	WM_CREATE         = 0x0001
+	WM_DESTROY        = 0x0002
+	WM_SIZE           = 0x0005
+	WM_PAINT          = 0x000F
+	WM_CLOSE          = 0x0010
+	WM_ERASEBKGND     = 0x0014
+	WM_SETCURSOR      = 0x0020
+	WM_GETMINMAXINFO  = 0x0024
+	WM_KEYDOWN        = 0x0100
+	WM_CHAR           = 0x0102
+	WM_TIMER          = 0x0113
+	WM_MOUSEMOVE      = 0x0200
+	WM_LBUTTONDOWN    = 0x0201
+	WM_LBUTTONUP      = 0x0202
+	WM_MOUSEWHEEL     = 0x020A
+	WM_MOUSELEAVE     = 0x02A3
+	WM_DPICHANGED     = 0x02E0
+	WM_APP            = 0x8000
+	WM_SCAN_DONE      = WM_APP + 1
+	WM_DIAG_DONE      = WM_APP + 2
+	WM_UPDATE_DONE    = WM_APP + 3
+	WM_REALTIME_EVENT = WM_APP + 4
 
 	VK_ESCAPE = 0x1B
 	TME_LEAVE = 0x00000002
@@ -265,14 +267,30 @@ type Token struct {
 	Price             float64   `json:"price"`
 	Liquidity         float64   `json:"liquidity"`
 	Volume24          float64   `json:"volume24"`
+	VolumeM5          float64   `json:"volume_m5"`
 	AgeHours          float64   `json:"age_hours"`
 	Change24          float64   `json:"change24"`
+	ChangeM5          float64   `json:"change_m5"`
 	Buys24            int       `json:"buys24"`
 	Sells24           int       `json:"sells24"`
+	BuysM5            int       `json:"buys_m5"`
+	SellsM5           int       `json:"sells_m5"`
+	FDV               float64   `json:"fdv"`
+	MarketCap         float64   `json:"market_cap"`
+	SignalScore       int       `json:"signal_score"`
 	BuyTaxPct         float64   `json:"buy_tax_pct"`
 	SellTaxPct        float64   `json:"sell_tax_pct"`
 	TaxKnown          bool      `json:"tax_known"`
 	Security          string    `json:"security"`
+	LPLockPct         float64   `json:"lp_lock_pct"`
+	LPLockKnown       bool      `json:"lp_lock_known"`
+	CreatorAddress    string    `json:"creator_address"`
+	CreatorPercent    float64   `json:"creator_percent"`
+	TopHolderPercent  float64   `json:"top_holder_percent"`
+	HolderCount       int       `json:"holder_count"`
+	RiskCheckedAt     time.Time `json:"risk_checked_at,omitempty"`
+	PotentialEligible bool      `json:"potential_eligible"`
+	PotentialStage    string    `json:"potential_stage"`
 	Evidence          []string  `json:"evidence"`
 	DEXURL            string    `json:"dex_url"`
 	Source            string    `json:"source"`
@@ -306,13 +324,18 @@ type appState struct {
 	selected          int
 	listPage          int // derived page number retained for the page buttons
 	listOffset        int // first visible filtered row; mouse wheel moves this continuously
+	pageScroll        int32
 	detailScroll      int32
-	filterMode        int // 0 all, 1 watched, 2 verified, 3 waiting data
+	filterMode        int // 0 all, 1 watched, 2 verified, 3 read-only review queue
 	sortMode          int // 0 score, 1 newest, 2 liquidity
 	searchText        string
 	searchFocused     bool
 	candidatePool     int
 	lastBatchAnalyzed int
+	strictQualified   int
+	strictAwaiting    int
+	strictRejected    int
+	strictRejectNotes string
 	lastScanDuration  time.Duration
 	lastSuccess       time.Time
 	page              int // 0 radar, 1 paper trading
@@ -336,54 +359,56 @@ type appState struct {
 	lastUpdateCheck   time.Time
 }
 
-var app = &appState{dpi: 96, uiScale: 1.0, selected: -1, selectedPos: -1, selectedTrade: -1, status: "等待多链实时监控", logs: []string{}, dirty: true, autoRefresh: true, sim: NewSimState(), monitor: NewMonitorState()}
+var app = &appState{dpi: 96, uiScale: 1.0, selected: -1, selectedPos: -1, selectedTrade: -1, status: "等待免费事件监听与多链回补", logs: []string{}, dirty: true, autoRefresh: true, sim: NewSimState(), monitor: NewMonitorState()}
 
 const (
-	idNone         = 0
-	idScan         = 1
-	idStop         = 2
-	idDemo         = 3
-	idExport       = 4
-	idOpenDEX      = 5
-	idTutorial     = 6
-	idDiagnose     = 7
-	idScaleDown    = 8
-	idScaleUp      = 9
-	idAuto         = 10
-	idModalClose   = 11
-	idModalPrev    = 12
-	idModalNext    = 13
-	idPageRadar    = 14
-	idPageSim      = 15
-	idSimBuy       = 16
-	idSimSell      = 17
-	idSimCloseAll  = 18
-	idSimAuto      = 19
-	idSimReset     = 20
-	idSimExport    = 21
-	idFilterAll    = 22
-	idFilterWatch  = 23
-	idFilterSafe   = 24
-	idFilterWait   = 25
-	idSortMode     = 26
-	idSearchBox    = 27
-	idClearSearch  = 28
-	idPrevPage     = 29
-	idNextPage     = 30
-	idSimProfile   = 31
-	idUpdate       = 32
-	idWatchToggle  = 33
-	idMonitorCSV   = 34
-	idDetailChart  = 35
-	idDetailChain  = 36
-	idExpandDetail = 37
-	idModalChart   = 38
-	idModalChain   = 39
-	idRowBase      = 1000
-	idPosBase      = 2000
-	idTradeBase    = 3000
-	idChartBase    = 4000
-	idChainBase    = 5000
+	idNone          = 0
+	idScan          = 1
+	idStop          = 2
+	idDemo          = 3
+	idExport        = 4
+	idOpenDEX       = 5
+	idTutorial      = 6
+	idDiagnose      = 7
+	idScaleDown     = 8
+	idScaleUp       = 9
+	idAuto          = 10
+	idModalClose    = 11
+	idModalPrev     = 12
+	idModalNext     = 13
+	idPageRadar     = 14
+	idPageSim       = 15
+	idSimBuy        = 16
+	idSimSell       = 17
+	idSimCloseAll   = 18
+	idSimAuto       = 19
+	idSimReset      = 20
+	idSimExport     = 21
+	idFilterAll     = 22
+	idFilterWatch   = 23
+	idFilterSafe    = 24
+	idFilterWait    = 25
+	idSortMode      = 26
+	idSearchBox     = 27
+	idClearSearch   = 28
+	idPrevPage      = 29
+	idNextPage      = 30
+	idSimProfile    = 31
+	idUpdate        = 32
+	idWatchToggle   = 33
+	idMonitorCSV    = 34
+	idDetailChart   = 35
+	idDetailChain   = 36
+	idExpandDetail  = 37
+	idModalChart    = 38
+	idModalChain    = 39
+	idDetailChinese = 40
+	idModalChinese  = 41
+	idRowBase       = 1000
+	idPosBase       = 2000
+	idTradeBase     = 3000
+	idChartBase     = 4000
+	idChainBase     = 5000
 )
 
 type layout struct {
@@ -415,10 +440,35 @@ func inset(r RECT, n int32) RECT { return RECT{r.Left + n, r.Top + n, r.Right - 
 func width(r RECT) int32         { return r.Right - r.Left }
 func height(r RECT) int32        { return r.Bottom - r.Top }
 
+func pageScrollRange() int32 { return s(360) }
+
+func clampPageScroll() {
+	if app.pageScroll < 0 {
+		app.pageScroll = 0
+	}
+	if maxScroll := pageScrollRange(); app.pageScroll > maxScroll {
+		app.pageScroll = maxScroll
+	}
+}
+
+func scrollPage(delta int32) bool {
+	before := app.pageScroll
+	app.pageScroll += delta
+	clampPageScroll()
+	return app.pageScroll != before
+}
+
+func shiftRectY(r RECT, delta int32) RECT {
+	r.Top += delta
+	r.Bottom += delta
+	return r
+}
+
 func buildLayout() layout {
 	var cr RECT
 	pGetClientRect.Call(uintptr(app.hwnd), uintptr(unsafe.Pointer(&cr)))
 	W, H := width(cr), height(cr)
+	virtualH := H + pageScrollRange()
 	pad := s(16)
 	headerH := s(78)
 	toolbarH := s(68)
@@ -472,7 +522,7 @@ func buildLayout() layout {
 	}
 	l.banner = rect(pad, cardsTop+cardH+gap, totalW, bannerH)
 	contentTop := l.banner.Bottom + gap
-	contentBottom := H - statusH - gap
+	contentBottom := virtualH - statusH - gap
 	rightW := s(390)
 	if W < s(1250) {
 		rightW = s(330)
@@ -495,8 +545,10 @@ func buildLayout() layout {
 	l.buttons[idWatchToggle] = rect(l.buttons[idExpandDetail].Left-s(102), l.detail.Top+s(8), s(94), s(34))
 	linkGap := s(8)
 	linkW := (rightW - s(36) - linkGap) / 2
-	l.buttons[idDetailChart] = rect(l.detail.Left+s(18), l.detail.Top+s(96), linkW, s(34))
-	l.buttons[idDetailChain] = rect(l.buttons[idDetailChart].Right+linkGap, l.detail.Top+s(96), linkW, s(34))
+	l.buttons[idDetailChinese] = rect(l.detail.Left+s(18), l.detail.Top+s(96), linkW, s(34))
+	l.buttons[idDetailChart] = rect(l.buttons[idDetailChinese].Right+linkGap, l.detail.Top+s(96), linkW, s(34))
+	// The native chain explorer remains available from the expanded detail view.
+	l.buttons[idDetailChain] = l.buttons[idDetailChart]
 	l.buttons[idMonitorCSV] = rect(l.logs.Right-s(126), l.logs.Top+s(8), s(110), s(34))
 	l.table = rect(pad, contentTop, l.detail.Left-pad-gap, contentBottom-contentTop)
 	compactFilters := width(l.table) < s(920)
@@ -559,6 +611,29 @@ func buildLayout() layout {
 	l.simPosHeader = rect(l.simPositions.Left+s(12), l.simPositions.Top+s(50), width(l.simPositions)-s(24), s(38))
 	l.simTrades = rect(l.table.Left, l.simPositions.Bottom+gap, width(l.table), height(l.table)-posH-gap)
 	l.simTradeHeader = rect(l.simTrades.Left+s(12), l.simTrades.Top+s(50), width(l.simTrades)-s(24), s(38))
+	clampPageScroll()
+	pageDelta := -app.pageScroll
+	l.header = shiftRectY(l.header, pageDelta)
+	l.toolbar = shiftRectY(l.toolbar, pageDelta)
+	l.statusPill = shiftRectY(l.statusPill, pageDelta)
+	for i := range l.cards {
+		l.cards[i] = shiftRectY(l.cards[i], pageDelta)
+	}
+	l.banner = shiftRectY(l.banner, pageDelta)
+	l.table = shiftRectY(l.table, pageDelta)
+	l.filterBar = shiftRectY(l.filterBar, pageDelta)
+	l.searchBox = shiftRectY(l.searchBox, pageDelta)
+	l.pageFooter = shiftRectY(l.pageFooter, pageDelta)
+	l.tableHeader = shiftRectY(l.tableHeader, pageDelta)
+	l.detail = shiftRectY(l.detail, pageDelta)
+	l.logs = shiftRectY(l.logs, pageDelta)
+	l.simPositions = shiftRectY(l.simPositions, pageDelta)
+	l.simPosHeader = shiftRectY(l.simPosHeader, pageDelta)
+	l.simTrades = shiftRectY(l.simTrades, pageDelta)
+	l.simTradeHeader = shiftRectY(l.simTradeHeader, pageDelta)
+	for id, r := range l.buttons {
+		l.buttons[id] = shiftRectY(r, pageDelta)
+	}
 	l.statusbar = rect(0, H-statusH, W, statusH)
 	mw := min32(s(760), W-s(80))
 	mh := min32(s(560), H-s(80))
@@ -569,6 +644,7 @@ func buildLayout() layout {
 	l.modal = rect((W-mw)/2, (H-mh)/2, mw, mh)
 	l.buttons[idModalClose] = rect(l.modal.Right-s(52), l.modal.Top+s(18), s(34), s(34))
 	l.buttons[idModalNext] = rect(l.modal.Right-s(154), l.modal.Bottom-s(64), s(130), s(42))
+	l.buttons[idModalChinese] = rect(l.modal.Right-s(444), l.modal.Top+s(20), s(104), s(38))
 	l.buttons[idModalChart] = rect(l.modal.Right-s(330), l.modal.Top+s(20), s(120), s(38))
 	l.buttons[idModalChain] = rect(l.modal.Right-s(200), l.modal.Top+s(20), s(130), s(38))
 	return l
@@ -593,6 +669,24 @@ func radarPageSize(l layout) int {
 
 func radarRowHeight() int32 { return s(68) }
 
+func radarLayerCounts(tokens []Token) (strict, review int) {
+	for _, t := range tokens {
+		if t.PotentialEligible {
+			strict++
+		} else {
+			review++
+		}
+	}
+	return strict, review
+}
+
+func radarReviewReason(t Token) string {
+	if t.PotentialStage != "" {
+		return t.PotentialStage
+	}
+	return "未通过严格交易门槛"
+}
+
 func filteredResultIndices() []int {
 	query := strings.ToLower(strings.TrimSpace(app.searchText))
 	idxs := make([]int, 0, len(app.results))
@@ -604,10 +698,10 @@ func filteredResultIndices() []int {
 		case 2:
 			match = t.Security == "已验证"
 		case 3:
-			match = t.Grade == "等待市场数据" || t.Grade == "等待分析" || t.Price <= 0
+			match = !t.PotentialEligible
 		}
 		if match && query != "" {
-			hay := strings.ToLower(strings.Join([]string{t.Chain, t.Symbol, t.Name, t.Address, t.Source, t.Security, t.Grade}, " "))
+			hay := strings.ToLower(strings.Join([]string{t.Chain, t.Symbol, t.Name, t.Address, t.Source, t.Security, t.Grade, t.PotentialStage}, " "))
 			match = strings.Contains(hay, query)
 		}
 		if match {
@@ -876,11 +970,11 @@ func drawUI(dc HDC, l layout) {
 func drawCommonHeader(dc HDC, l layout, subtitle string) {
 	ensureFonts()
 	fillRect(dc, l.client, col.bg)
-	logo := rect(s(18), s(18), s(44), s(44))
+	logo := rect(s(18), l.header.Top+s(18), s(44), s(44))
 	ellipse(dc, logo, col.cyan, col.cyan)
 	text(dc, "B", logo, fnts.button, rgb(3, 35, 38), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-	text(dc, "Multi-Chain Token Radar", rect(s(76), s(10), s(500), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
-	text(dc, subtitle, rect(s(77), s(48), s(560), s(22)), fnts.subtitle, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, "Multi-Chain Token Radar", rect(s(76), l.header.Top+s(10), s(500), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, subtitle, rect(s(77), l.header.Top+s(48), s(560), s(22)), fnts.subtitle, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	drawButton(dc, idPageRadar, l.buttons[idPageRadar], "代币雷达", true, app.page == 0)
 	drawButton(dc, idPageSim, l.buttons[idPageSim], "模拟盘", true, app.page == 1)
 	statusFill := col.panel2
@@ -899,19 +993,21 @@ func drawCommonHeader(dc HDC, l layout, subtitle string) {
 }
 
 func drawSimUI(dc HDC, l layout) {
-	drawCommonHeader(dc, l, "V2.9 自动策略验证 · 真实成本模拟 · 不连接钱包")
+	drawCommonHeader(dc, l, "V2.21.1 三链事件监听 · $1,000 策略验证 · 不连接钱包")
 	if app.sim == nil {
 		app.sim = NewSimState()
 	}
 	m := app.sim.Metrics(tokensToQuotes(app.results, time.Now()))
 	v := app.sim.Validation()
+	_, shadowClosed, shadowWins, shadowAvg := app.sim.ShadowSummary()
+	funnelOpen, funnelClosed, funnelWins, funnelAvg := app.sim.FunnelReviewSummary()
 
 	roundRect(dc, l.toolbar, col.panel, col.border, s(9))
 	drawButton(dc, idSimSell, l.buttons[idSimSell], "卖出选中", selectedPositionValid(), false)
 	drawButton(dc, idSimCloseAll, l.buttons[idSimCloseAll], "全部平仓", len(app.sim.Positions) > 0, false)
 	drawButton(dc, idSimExport, l.buttons[idSimExport], "导出记录", len(app.sim.Trades) > 0, false)
 	drawButton(dc, idSimReset, l.buttons[idSimReset], "重置模拟盘", true, false)
-	drawButton(dc, idSimProfile, l.buttons[idSimProfile], "策略档位："+app.sim.ProfileName(), true, app.sim.AutoProfile == AutoProfileTest)
+	drawButton(dc, idSimProfile, l.buttons[idSimProfile], "策略档位："+app.sim.ProfileName(), true, app.sim.AutoProfile == AutoProfileExplore)
 	ar := l.buttons[idSimAuto]
 	roundRect(dc, ar, col.panel2, col.border, s(8))
 	sw := rect(ar.Left+s(12), ar.Top+s(10), s(40), s(20))
@@ -927,9 +1023,17 @@ func drawSimUI(dc HDC, l layout) {
 	ellipse(dc, rect(knobX, sw.Top+s(3), s(14), s(14)), col.text, col.text)
 	text(dc, "自动模拟策略", rect(sw.Right+s(10), ar.Top, ar.Right-sw.Right-s(18), height(ar)), fnts.small, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 
-	vals := []string{fmt.Sprintf("%.2f", m.Equity), fmt.Sprintf("%.2f", m.Cash), fmt.Sprintf("%+.2f", m.NetPnL), fmt.Sprintf("%.1f%%", v.WinRate)}
-	labels := []string{"模拟总资产 USDC", "可用余额", "累计净盈亏", "自动完整交易胜率"}
-	subs := []string{fmt.Sprintf("持仓市值 %.2f", m.PositionValue), fmt.Sprintf("当前持仓 %d / %d", len(app.sim.Positions), app.sim.Config.MaxPositions), fmt.Sprintf("最大回撤 %.1f%%", m.MaxDrawdown), fmt.Sprintf("样本 %d / %d · PF %s", v.ClosedPositions, v.RequiredPositions, v.ProfitFactorText())}
+	vals := []string{fmt.Sprintf("%.2f", m.Equity), fmt.Sprintf("%.2f", m.Cash), fmt.Sprintf("%+.2f", m.NetPnL), fmt.Sprintf("%d / %d", funnelOpen, funnelClosed)}
+	labels := []string{"模拟总资产 USDC", "可用余额", "累计净盈亏", "淘汰复盘（进行 / 闭合）"}
+	subs := []string{
+		fmt.Sprintf("持仓市值 %.2f", m.PositionValue),
+		fmt.Sprintf("当前持仓 %d / %d", len(app.sim.Positions), app.sim.Config.MaxPositions),
+		fmt.Sprintf("最大回撤 %.1f%%", m.MaxDrawdown),
+		fmt.Sprintf("胜 %d，均值 %+.1f%% · 影子闭合 %d，胜 %d，均值 %+.1f%%", funnelWins, funnelAvg, shadowClosed, shadowWins, shadowAvg),
+	}
+	if m.UnpricedPositions > 0 {
+		subs[0] = fmt.Sprintf("%d 个仓位报价中断（成本 %.2f），不计入验证", m.UnpricedPositions, m.UnpricedCost)
+	}
 	accents := []uint32{col.blue, col.cyan, col.green, col.yellow}
 	for i, r := range l.cards {
 		roundRect(dc, r, col.panel, col.border, s(9))
@@ -954,6 +1058,10 @@ func drawSimUI(dc HDC, l layout) {
 		bf, bb = col.greenBg, col.green
 		banner = fmt.Sprintf("纸面验证通过：%d 笔完整自动交易 · 净收益 %+.2f · PF %s；仍需继续观察。", v.ClosedPositions, v.NetPnL, v.ProfitFactorText())
 	}
+	if app.sim.QuoteSafetyPaused {
+		bf, bb = col.yellowBg, col.yellow
+		banner = "报价完整性保护：" + app.sim.QuoteSafetyReason + "。已暂停自动开仓；恢复后请人工复核再继续。"
+	}
 	roundRect(dc, l.banner, bf, bb, s(7))
 	text(dc, banner, inset(l.banner, s(14)), fnts.body, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 
@@ -967,7 +1075,12 @@ func drawSimUI(dc HDC, l layout) {
 	line(dc, 0, l.statusbar.Top, l.statusbar.Right, l.statusbar.Top, col.border)
 	ellipse(dc, rect(s(8), l.statusbar.Top+s(9), s(8), s(8)), col.green, col.green)
 	text(dc, fmt.Sprintf("模拟盘：不连接钱包、不发送交易 · 最近价格 %s", lastUpdateText()), rect(s(24), l.statusbar.Top, s(920), height(l.statusbar)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	text(dc, fmt.Sprintf("自动策略：%s（%s档） · 实时监控：%s", onOff(app.sim.AutoEnabled), app.sim.ProfileName(), onOff(app.autoRefresh)), rect(l.statusbar.Right-s(430), l.statusbar.Top, s(415), height(l.statusbar)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
+	safety := "正常"
+	if app.sim.QuoteSafetyPaused {
+		safety = "报价保护暂停"
+	}
+	text(dc, fmt.Sprintf("自动策略：%s（%s档） · %s · 实时监控：%s", onOff(app.sim.AutoEnabled), app.sim.ProfileName(), safety, onOff(app.autoRefresh)), rect(l.statusbar.Right-s(560), l.statusbar.Top, s(545), height(l.statusbar)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
+	drawPageScrollbar(dc, l)
 	if app.toast != "" && time.Now().Before(app.toastUntil) {
 		tr := rect(l.client.Right-s(380), l.client.Bottom-s(88), s(350), s(48))
 		roundRect(dc, tr, col.panel3, col.cyan, s(8))
@@ -984,8 +1097,11 @@ func drawSimPositions(dc HDC, l layout) {
 	text(dc, "当前模拟持仓", rect(r.Left+s(16), r.Top+s(10), s(260), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	text(dc, fmt.Sprintf("%d 个持仓", len(app.sim.Positions)), rect(r.Right-s(220), r.Top+s(12), s(200), s(28)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
 	fillRect(dc, l.simPosHeader, col.panel3)
-	headers := []string{"代币", "成本", "现价", "净收益率", "持仓时间"}
-	fr := []float64{0.28, 0.18, 0.18, 0.18, 0.18}
+	// Keep the paper position's entry evidence visible in the table.  The
+	// simulator has always persisted these values, but showing only the mark
+	// made it unnecessarily difficult to audit an open simulated trade.
+	headers := []string{"代币", "买入时间", "买入价", "现价", "剩余成本", "浮动盈亏", "持仓时长"}
+	fr := []float64{0.16, 0.16, 0.14, 0.14, 0.14, 0.14, 0.12}
 	x := l.simPosHeader.Left
 	for i, h := range headers {
 		cw := int32(float64(width(l.simPosHeader)) * fr[i])
@@ -1020,15 +1136,42 @@ func drawSimPositions(dc HDC, l layout) {
 		if p.RemainingCost > 0 {
 			ret = (net - p.RemainingCost) / p.RemainingCost * 100
 		}
-		vals := []string{"[" + chainLabel(p.Chain) + "] " + p.Symbol, fmt.Sprintf("%.2f", p.RemainingCost), price(priceV), fmt.Sprintf("%+.1f%%", ret), durationText(time.Since(p.OpenedAt))}
+		unrealized := net - p.RemainingCost
+		name := "[" + chainLabel(p.Chain) + "] " + p.Symbol
+		if !p.QuoteInterruptedAt.IsZero() {
+			name += " · 报价中断"
+		}
+		currentPrice := price(priceV)
+		pnlText := fmt.Sprintf("%+.2f (%+.1f%%)", unrealized, ret)
+		// A stale mark must never be presented as a current price or current PnL.
+		if !p.QuoteInterruptedAt.IsZero() {
+			currentPrice = "报价中断"
+			pnlText = "等待有效报价"
+		}
+		holding := "—"
+		if !p.OpenedAt.IsZero() {
+			holding = durationText(time.Since(p.OpenedAt))
+		}
+		vals := []string{
+			name,
+			positionOpenedAtText(p.OpenedAt),
+			price(p.EntryPrice),
+			currentPrice,
+			money(p.RemainingCost),
+			pnlText,
+			holding,
+		}
 		x = rr.Left
 		for j, v := range vals {
 			cw := int32(float64(width(rr)) * fr[j])
 			tc := col.text
-			if j == 3 && ret >= 0 {
+			if j == 5 && ret >= 0 && p.QuoteInterruptedAt.IsZero() {
 				tc = col.green
-			} else if j == 3 {
+			} else if j == 5 && p.QuoteInterruptedAt.IsZero() {
 				tc = col.red
+			}
+			if j == 0 && !p.QuoteInterruptedAt.IsZero() {
+				tc = col.yellow
 			}
 			text(dc, v, rect(x+s(5), rr.Top, cw-s(10), height(rr)), fnts.table, tc, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 			x += cw
@@ -1093,15 +1236,39 @@ func drawSimDetail(dc HDC, r RECT, m SimMetrics) {
 	y := body.Top
 	rules := app.sim.rules()
 	v := app.sim.Validation()
+	diag := app.sim.LastEntryStats
+	exploreOpen, exploreClosed, explorePnL := app.sim.ExplorationSummary()
+	shadowOpen, shadowClosed, shadowWins, shadowAvg := app.sim.ShadowSummary()
+	funnelOpen, funnelClosed, funnelWins, funnelAvg := app.sim.FunnelReviewSummary()
+	positionCap := app.sim.Config.PositionSize
+	if app.sim.AutoProfile == AutoProfileExplore && positionCap > 1 {
+		positionCap = 1
+	}
 	securityLine := "• 需要安全已验证，税费必须已确认"
 	if !rules.RequireVerified {
 		securityLine = "• 测试档允许安全未验证/税费未知，但严重风险仍硬性禁止"
+	}
+	if app.sim.AutoProfile == AutoProfileExplore {
+		securityLine = "• 探索档只用 ≤1 USDC 纸面仓位；严重风险、零分和已知高税费仍硬性禁止"
+	}
+	if app.sim.AutoProfile == AutoProfileValidation {
+		securityLine = "• 仅严格首发资格可开仓：安全已验证、税费已确认且≤5%"
 	}
 	patternLine := "• 需要回调后重新走强，避免贴近短线高点"
 	if !rules.RequirePullback {
 		patternLine = "• 测试档只要求基础上涨趋势，目的是尽快验证模拟系统"
 	}
-	lines := []string{fmt.Sprintf("验证状态：%s · 完整自动交易 %d/%d", v.Status, v.ClosedPositions, v.RequiredPositions), fmt.Sprintf("自动净收益：%+.2f · 利润因子：%s · 期望/笔：%+.3f", v.NetPnL, v.ProfitFactorText(), v.Expectancy), fmt.Sprintf("自动样本最大回撤：%.1f%% · 通过门槛≤%.0f%%", v.MaxDrawdown, app.sim.Config.MaxValidationDrawdown), fmt.Sprintf("连续亏损：%d/%d · 达线暂停 %.0f 分钟", v.ConsecutiveLosses, app.sim.Config.MaxConsecutiveLosses, app.sim.Config.LossCooldownMinutes), "", fmt.Sprintf("当前自动策略：%s档 · 动态仓位≤%.2f USDC", app.sim.ProfileName(), app.sim.Config.PositionSize), fmt.Sprintf("• 评分≥%d，流动性≥%s，观察≥%.0f分钟，池龄≤%.0f小时", rules.MinScore, money(rules.MinLiquidity), rules.ObserveMinutes, rules.MaxAgeHours), securityLine, fmt.Sprintf("• 已知买卖税≤%.0f%%，买卖笔数比≥%.2f", rules.MaxTaxPct, rules.MinBuySellRatio), patternLine, "• 同链只开一个仓位；流动性不稳或短时暴涨拒绝追入", "", "成本已计入 DEX 费、Gas、税费和流动性滑点；模拟盈利不等于实盘盈利。"}
+	if app.sim.AutoProfile == AutoProfileExplore {
+		patternLine = "• 探索档观察 30 秒；只要基础价格不走弱即可记录小额纸面样本"
+	}
+	if app.sim.AutoProfile == AutoProfileValidation {
+		patternLine = "• 验证档观察约 30 秒；严格新池仍需价格稳定、流动性不下降、不可追高"
+	}
+	flowLine := fmt.Sprintf("• 已知买卖税≤%.0f%%，买卖笔数比≥%.2f", rules.MaxTaxPct, rules.MinBuySellRatio)
+	if rules.MinBuySellRatio == 0 {
+		flowLine = fmt.Sprintf("• 已知买卖税≤%.0f%%；不以买卖笔数为硬门槛", rules.MaxTaxPct)
+	}
+	lines := []string{fmt.Sprintf("正式验证：%s · 严格完整交易 %d/%d", v.Status, v.ClosedPositions, v.RequiredPositions), fmt.Sprintf("严格策略净收益：%+.2f · PF %s · 期望/笔 %+.3f", v.NetPnL, v.ProfitFactorText(), v.Expectancy), fmt.Sprintf("本轮评估：候选 %d · 合格 %d · 自动开仓 %d · 新影子 %d", diag.Evaluated, diag.Eligible, diag.Opened, diag.ShadowStarted), "拦截原因：" + diag.TopReasons(3), fmt.Sprintf("探索样本：进行 %d · 已闭合 %d · 净盈亏 %+.2f（不计正式验证）", exploreOpen, exploreClosed, explorePnL), fmt.Sprintf("影子样本：进行 %d · 已闭合 %d · 胜 %d · 平均变动 %+.1f%%", shadowOpen, shadowClosed, shadowWins, shadowAvg), fmt.Sprintf("淘汰复盘：进行 %d · 已闭合 %d · 反向上涨 %d · 平均变动 %+.1f%%（不影响策略验证）", funnelOpen, funnelClosed, funnelWins, funnelAvg), "", fmt.Sprintf("验证账户：%.0f USDC · 单笔≤%.2f · 最多 %d 仓 · 日亏损熔断 %.0f", app.sim.Config.InitialCash, positionCap, app.sim.Config.MaxPositions, app.sim.Config.DailyLossLimit), fmt.Sprintf("退出计划：净亏损 %.0f%% 平仓；+%.0f%% / +%.0f%% 各卖 35%%；余仓目标 +%.0f%% 或高点回撤 %.0f%%", app.sim.Config.StopLossPct, app.sim.Config.TakeProfit1Pct, app.sim.Config.TakeProfit2Pct, app.sim.Config.TakeProfit3Pct, app.sim.Config.TrailingStopPct), fmt.Sprintf("• 评分≥%d，流动性≥%s，观察≥%.1f分钟，池龄≤%.0f小时", rules.MinScore, money(rules.MinLiquidity), rules.ObserveMinutes, rules.MaxAgeHours), securityLine, flowLine, patternLine, "• 同链只开一个仓位；流动性不稳或短时暴涨仍拒绝追入", "", "成本已计入 DEX 费、Gas、税费和流动性滑点；纸面验证不代表实盘盈利。"}
 	for _, ln := range lines {
 		h := s(25)
 		if ln == "" {
@@ -1123,15 +1290,24 @@ func durationText(d time.Duration) string {
 	return fmt.Sprintf("%.1f天", d.Hours()/24)
 }
 
+// positionOpenedAtText is deliberately compact enough for the paper-position
+// table while keeping the time at which the simulated fill was recorded.
+func positionOpenedAtText(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	return t.Local().Format("01-02 15:04")
+}
+
 func drawRadarUI(dc HDC, l layout) {
 	ensureFonts()
 	fillRect(dc, l.client, col.bg)
 	// Header
-	logo := rect(s(18), s(18), s(44), s(44))
+	logo := rect(s(18), l.header.Top+s(18), s(44), s(44))
 	ellipse(dc, logo, col.cyan, col.cyan)
 	text(dc, "B", logo, fnts.button, rgb(3, 35, 38), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-	text(dc, "Multi-Chain Token Radar", rect(s(76), s(10), s(500), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
-	text(dc, "Base + BSC + Arbitrum 新池发现 · 免费监控 · 本地模拟交易", rect(s(77), s(48), s(560), s(22)), fnts.subtitle, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, "Multi-Chain Token Radar", rect(s(76), l.header.Top+s(10), s(500), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, "3 链事件监听 + 6 链区块回补 · 免费监控 · 本地模拟交易", rect(s(77), l.header.Top+s(48), s(650), s(22)), fnts.subtitle, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	drawButton(dc, idPageRadar, l.buttons[idPageRadar], "代币雷达", true, app.page == 0)
 	drawButton(dc, idPageSim, l.buttons[idPageSim], "模拟盘", true, app.page == 1)
 	statusFill := col.panel2
@@ -1174,11 +1350,14 @@ func drawRadarUI(dc HDC, l layout) {
 		knobX = sw.Right - s(17)
 	}
 	ellipse(dc, rect(knobX, sw.Top+s(3), s(14), s(14)), col.text, col.text)
-	text(dc, "5秒实时监控", rect(sw.Right+s(10), ar.Top, ar.Right-sw.Right-s(18), height(ar)), fnts.small, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, "最快5秒发起下一轮", rect(sw.Right+s(10), ar.Top, ar.Right-sw.Right-s(18), height(ar)), fnts.small, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	// Cards. Strict signals and read-only review rows are intentionally counted
+	// separately: a non-empty screen must never imply that an order is allowed.
+	strictRows, reviewRows := radarLayerCounts(app.results)
 	// Cards
-	vals := []string{strconv.Itoa(len(app.results)), verifiedCount(), watchCount(), strconv.Itoa(app.candidatePool)}
-	labels := []string{"当前列表", "安全已验证", "自选关注", "多链候选库"}
-	subs := []string{"每条数据标记来源和时间", "第三方结果仍需人工复核", "持续快照与异常告警", "三链最多保留 240 个"}
+	vals := []string{strconv.Itoa(strictRows), fmt.Sprintf("%d / %d", app.strictQualified, app.strictAwaiting), strconv.Itoa(reviewRows), strconv.Itoa(app.candidatePool)}
+	labels := []string{"严格信号", "本轮通过 / 等待", "只读审查队列", "多链候选库"}
+	subs := []string{"仅此类标的可模拟买入；为 0 不代表网络中断", "等待精确池市场索引后会再次检查", fmt.Sprintf("仅供复核，不可交易；本轮淘汰 %d · %s", app.strictRejected, app.strictRejectNotes), fmt.Sprintf("%d 链最多保留 %d 个", len(chainModules), len(chainModules)*80)}
 	accents := []uint32{col.blue, col.cyan, col.green, col.yellow}
 	for i, r := range l.cards {
 		roundRect(dc, r, col.panel, col.border, s(9))
@@ -1207,11 +1386,12 @@ func drawRadarUI(dc HDC, l layout) {
 	}
 	chainText := app.chainSummary
 	if chainText == "" {
-		chainText = "等待三链区块状态"
+		chainText = fmt.Sprintf("等待 %d 条链区块状态", len(chainModules))
 	}
-	bannerText := fmt.Sprintf("%s · 上次成功 %s · 本轮分析 %d 个 · 耗时 %s · 下轮 %s", chainText, lastOK, app.lastBatchAnalyzed, dur, next)
+	realtimeText := currentRealtimeSummary().Text()
+	bannerText := fmt.Sprintf("%s · %s · 上次成功 %s · 本轮分析 %d 个 · 耗时 %s · 下轮 %s", realtimeText, chainText, lastOK, app.lastBatchAnalyzed, dur, next)
 	if app.scanning {
-		bannerText = fmt.Sprintf("正在并行扫描 Base / BSC / Arbitrum · 已保留 %d 个多链候选", app.candidatePool)
+		bannerText = fmt.Sprintf("%s · 正在并行扫描 ETH / Base / BSC / OP / Polygon / Arbitrum · 已保留 %d 个多链候选", realtimeText, app.candidatePool)
 	}
 	if app.statusKind == 3 {
 		bf = col.redBg
@@ -1226,7 +1406,7 @@ func drawRadarUI(dc HDC, l layout) {
 	roundRect(dc, l.table, col.panel, col.border, s(9))
 	roundRect(dc, l.detail, col.panel, col.border, s(9))
 	roundRect(dc, l.logs, col.panel, col.border, s(9))
-	text(dc, "候选列表", rect(l.table.Left+s(16), l.table.Top+s(10), s(240), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, "严格信号 / 审查队列", rect(l.table.Left+s(16), l.table.Top+s(10), s(300), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	visible, filteredCount, _ := visibleResultIndices(l)
 	startNo := 0
 	endNo := 0
@@ -1234,11 +1414,11 @@ func drawRadarUI(dc HDC, l layout) {
 		startNo = app.listOffset + 1
 		endNo = startNo + len(visible) - 1
 	}
-	text(dc, fmt.Sprintf("显示 %d–%d / 共 %d 条 · 候选库 %d", startNo, endNo, filteredCount, app.candidatePool), rect(l.table.Right-s(390), l.table.Top+s(12), s(370), s(28)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, fmt.Sprintf("显示 %d–%d / 共 %d 条 · 严格 %d · 审查 %d", startNo, endNo, filteredCount, strictRows, reviewRows), rect(l.table.Right-s(460), l.table.Top+s(12), s(440), s(28)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
 	drawButton(dc, idFilterAll, l.buttons[idFilterAll], "全部", true, app.filterMode == 0)
 	drawButton(dc, idFilterWatch, l.buttons[idFilterWatch], "已关注", true, app.filterMode == 1)
 	drawButton(dc, idFilterSafe, l.buttons[idFilterSafe], "已验证", true, app.filterMode == 2)
-	drawButton(dc, idFilterWait, l.buttons[idFilterWait], "待数据", true, app.filterMode == 3)
+	drawButton(dc, idFilterWait, l.buttons[idFilterWait], "审查队列", true, app.filterMode == 3)
 	drawButton(dc, idSortMode, l.buttons[idSortMode], sortModeText(), true, false)
 	searchFill := col.panel3
 	searchBorder := col.border
@@ -1265,14 +1445,14 @@ func drawRadarUI(dc HDC, l layout) {
 		text(dc, h, rect(x, l.tableHeader.Top, cw, height(l.tableHeader)), fnts.table, col.muted, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 		x += cw
 	}
-	if len(app.results) == 0 {
+	if filteredCount == 0 {
 		drawEmpty(dc, l.table)
 	} else {
 		drawRows(dc, l)
 	}
 	drawListScrollbar(dc, l, filteredCount)
 	line(dc, l.pageFooter.Left, l.pageFooter.Top-s(4), l.pageFooter.Right, l.pageFooter.Top-s(4), col.border)
-	text(dc, fmt.Sprintf("滚动显示 %d–%d / %d · 鼠标滚轮逐行浏览", startNo, endNo, filteredCount), rect(l.pageFooter.Left+s(4), l.pageFooter.Top, s(420), height(l.pageFooter)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, fmt.Sprintf("显示 %d–%d / %d · 列表内滚动代币，右侧或空白处滚动整页", startNo, endNo, filteredCount), rect(l.pageFooter.Left+s(4), l.pageFooter.Top, s(560), height(l.pageFooter)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	drawButton(dc, idPrevPage, l.buttons[idPrevPage], "向上翻页", app.listOffset > 0, false)
 	drawButton(dc, idNextPage, l.buttons[idNextPage], "向下翻页", app.listOffset+radarPageSize(l) < filteredCount, false)
 	drawDetails(dc, l.detail)
@@ -1289,7 +1469,8 @@ func drawRadarUI(dc HDC, l layout) {
 	}
 	ellipse(dc, rect(s(8), l.statusbar.Top+s(9), s(8), s(8)), sd, sd)
 	text(dc, statusBarText(), rect(s(24), l.statusbar.Top, s(900), height(l.statusbar)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	text(dc, fmt.Sprintf("实时监控：%s · 界面 %d%%", onOff(app.autoRefresh), []int{100, 115, 130, 150}[app.scaleIndex]), rect(l.statusbar.Right-s(330), l.statusbar.Top, s(315), height(l.statusbar)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, fmt.Sprintf("整页可下拉 · 实时监控：%s · 界面 %d%%", onOff(app.autoRefresh), []int{100, 115, 130, 150}[app.scaleIndex]), rect(l.statusbar.Right-s(390), l.statusbar.Top, s(375), height(l.statusbar)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
+	drawPageScrollbar(dc, l)
 	// Toast
 	if app.toast != "" && time.Now().Before(app.toastUntil) {
 		tr := rect(l.client.Right-s(380), l.client.Bottom-s(88), s(350), s(48))
@@ -1306,8 +1487,14 @@ func drawEmpty(dc HDC, panel RECT) {
 	cy := panel.Top + height(panel)/2
 	ellipse(dc, rect(cx-s(28), cy-s(58), s(56), s(56)), rgb(10, 31, 49), col.cyan)
 	text(dc, "—", rect(cx-s(28), cy-s(58), s(56), s(56)), fnts.section, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-	text(dc, "还没有候选数据", rect(cx-s(200), cy+s(8), s(400), s(28)), fnts.section, col.text, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-	text(dc, "第 1 步：先点“演示数据”熟悉界面  ·  第 2 步：点击“立即扫描”并等待 20–60 秒", rect(cx-s(360), cy+s(40), s(720), s(28)), fnts.small, col.muted, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+	title := "当前没有严格信号或可审查候选"
+	detail := "严格信号为 0 时不会模拟买入；请保持监控，新的等待或淘汰项目会进入“审查队列”并附上原因。"
+	if app.filterMode == 3 {
+		title = "当前没有可审查的近期候选"
+		detail = "审查队列只保留近 6 小时内有明确拦截原因的项目；切回“全部”可查看严格信号。"
+	}
+	text(dc, title, rect(cx-s(270), cy+s(8), s(540), s(28)), fnts.section, col.text, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+	text(dc, detail, rect(cx-s(390), cy+s(40), s(780), s(45)), fnts.small, col.muted, DT_CENTER|DT_WORDBREAK)
 }
 
 func drawRows(dc HDC, l layout) {
@@ -1327,7 +1514,15 @@ func drawRows(dc HDC, l layout) {
 			fillRect(dc, rr, rgb(17, 39, 65))
 		}
 		line(dc, rr.Left, rr.Bottom, rr.Right, rr.Bottom, rgb(25, 47, 74))
-		vals := []string{strconv.Itoa(t.Score), fmt.Sprintf("[%s] %s  %s", chainLabel(t.Chain), t.Symbol, t.Name), t.Security, money(t.Liquidity), money(t.Volume24), ageText(t.AgeHours), fmt.Sprintf("%+.1f%%", t.Change24)}
+		name := fmt.Sprintf("[%s] %s  %s", chainLabel(t.Chain), t.Symbol, t.Name)
+		security := t.Security
+		footnote := "合约 " + shortAddr(t.Address)
+		if !t.PotentialEligible {
+			name = "【审查】" + name
+			security = "只读 · " + t.Security
+			footnote = "审查原因：" + radarReviewReason(t) + " · 合约 " + shortAddr(t.Address)
+		}
+		vals := []string{strconv.Itoa(t.Score), name, security, money(t.Liquidity), money(t.Volume24), ageText(t.AgeHours), fmt.Sprintf("%+.1f%%", t.Change24)}
 		x := rr.Left
 		for j, v := range vals {
 			cw := int32(float64(width(rr)) * fracs[j])
@@ -1348,6 +1543,9 @@ func drawRows(dc HDC, l layout) {
 					tc = col.red
 				}
 			}
+			if !t.PotentialEligible && (j == 1 || j == 2) {
+				tc = col.yellow
+			}
 			align := uint32(DT_CENTER)
 			if j == 1 {
 				align = DT_LEFT
@@ -1356,9 +1554,9 @@ func drawRows(dc HDC, l layout) {
 			x += cw
 		}
 		chartR, chainR := radarRowLinkRects(l, row)
-		text(dc, "合约 "+shortAddr(t.Address), rect(rr.Left+s(12), rr.Top+s(42), width(rr)-s(250), s(22)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-		text(dc, "走势 ↗", chartR, fnts.small, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-		text(dc, "合约页 ↗", chainR, fnts.small, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+		text(dc, footnote, rect(rr.Left+s(12), rr.Top+s(42), width(rr)-s(250), s(22)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		text(dc, "原始走势 ↗", chartR, fnts.small, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+		text(dc, "中文行情 ↗", chainR, fnts.small, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 		y += rowH
 	}
 }
@@ -1390,6 +1588,31 @@ func drawListScrollbar(dc HDC, l layout, total int) {
 	roundRect(dc, rect(track.Left, thumbY, width(track), thumbH), col.cyan2, col.cyan2, s(2))
 }
 
+func drawPageScrollbar(dc HDC, l layout) {
+	if app.modal != 0 || pageScrollRange() <= 0 {
+		return
+	}
+	track := rect(l.client.Right-s(8), s(12), s(4), l.statusbar.Top-s(24))
+	if height(track) <= 0 {
+		return
+	}
+	roundRect(dc, track, rgb(19, 38, 61), rgb(19, 38, 61), s(2))
+	virtualH := height(l.client) + pageScrollRange()
+	thumbH := int32(float64(height(track)) * float64(height(l.client)) / float64(virtualH))
+	if thumbH < s(48) {
+		thumbH = s(48)
+	}
+	if thumbH > height(track) {
+		thumbH = height(track)
+	}
+	travel := height(track) - thumbH
+	thumbY := track.Top
+	if maxScroll := pageScrollRange(); maxScroll > 0 {
+		thumbY += int32(float64(travel) * float64(app.pageScroll) / float64(maxScroll))
+	}
+	roundRect(dc, rect(track.Left, thumbY, width(track), thumbH), col.cyan, col.cyan, s(2))
+}
+
 func drawDetails(dc HDC, r RECT) {
 	text(dc, "候选详情", rect(r.Left+s(16), r.Top+s(10), s(120), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	watchLabel := "加入关注"
@@ -1411,8 +1634,8 @@ func drawDetails(dc HDC, r RECT) {
 		y := body.Top + s(8)
 		text(dc, fmt.Sprintf("[%s] %s  %s", chainLabel(t.Chain), t.Symbol, t.Name), rect(body.Left+s(8), y, width(body)-s(16), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 		y += s(36)
-		drawButton(dc, idDetailChart, buildLayout().buttons[idDetailChart], "查看走势图 ↗", true, true)
-		drawButton(dc, idDetailChain, buildLayout().buttons[idDetailChain], "区块浏览器 ↗", true, false)
+		drawButton(dc, idDetailChinese, buildLayout().buttons[idDetailChinese], "中文行情 ↗", true, true)
+		drawButton(dc, idDetailChart, buildLayout().buttons[idDetailChart], "原始走势 ↗", true, false)
 		y += s(42)
 
 		scoreR := rect(body.Left+s(8), y, s(72), s(54))
@@ -1425,7 +1648,11 @@ func drawDetails(dc HDC, r RECT) {
 		roundRect(dc, scoreR, rgb(9, 29, 48), sc, s(8))
 		text(dc, strconv.Itoa(t.Score), scoreR, fnts.number, sc, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 		text(dc, t.Grade, rect(scoreR.Right+s(12), y, width(body)-s(104), s(25)), fnts.body, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-		text(dc, t.Security, rect(scoreR.Right+s(12), y+s(27), width(body)-s(104), s(23)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		stageText := t.Security
+		if !t.PotentialEligible {
+			stageText = "只读审查 · " + radarReviewReason(t)
+		}
+		text(dc, stageText, rect(scoreR.Right+s(12), y+s(27), width(body)-s(104), s(23)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 		y += s(64)
 
 		leftX := body.Left + s(10)
@@ -1443,15 +1670,26 @@ func drawDetails(dc HDC, r RECT) {
 			{fmt.Sprintf("买/卖：%d / %d", t.Buys24, t.Sells24), fmt.Sprintf("来源：%s", t.Source)},
 			{"数据更新：" + dataFreshness(t.UpdatedAt), blockText},
 		}
+		if !t.PotentialEligible {
+			metrics = append(metrics, [2]string{"交易状态：只读审查，禁止模拟买入", "拦截原因：" + radarReviewReason(t)})
+		}
 		if t.TaxKnown {
 			metrics = append(metrics, [2]string{fmt.Sprintf("买入税：%.1f%%", t.BuyTaxPct), fmt.Sprintf("卖出税：%.1f%%", t.SellTaxPct)})
 		} else {
 			metrics = append(metrics, [2]string{"买卖税：未确认", "自动策略不会开仓"})
 		}
-		if t.PoolAddress != "" {
-			metrics = append(metrics, [2]string{"池地址：" + shortAddr(t.PoolAddress), ""})
+		if t.LPLockKnown {
+			metrics = append(metrics, [2]string{fmt.Sprintf("LP 锁定：%.1f%%", t.LPLockPct*100), fmt.Sprintf("创建者持仓：%.1f%%", t.CreatorPercent*100)})
+		} else {
+			metrics = append(metrics, [2]string{"LP 锁定：未验证", fmt.Sprintf("创建者持仓：%.1f%%", t.CreatorPercent*100)})
 		}
+		metrics = append(metrics, [2]string{fmt.Sprintf("最大持仓：%.1f%%", t.TopHolderPercent*100), fmt.Sprintf("持币地址：%d", t.HolderCount)})
+		footerH := s(48)
+		footerTop := body.Bottom - footerH
 		for _, pair := range metrics {
+			if y+s(21) > footerTop-s(6) {
+				break
+			}
 			text(dc, pair[0], rect(leftX, y, colW, s(21)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 			if pair[1] != "" {
 				text(dc, pair[1], rect(rightX, y, colW, s(21)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
@@ -1460,33 +1698,35 @@ func drawDetails(dc HDC, r RECT) {
 		}
 
 		y += s(4)
-		text(dc, "主要证据", rect(body.Left+s(8), y, width(body)-s(16), s(26)), fnts.body, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
-		y += s(29)
+		if y+s(55) <= footerTop {
+			text(dc, "主要证据", rect(body.Left+s(8), y, width(body)-s(16), s(26)), fnts.body, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+			y += s(29)
+			lineH := s(30)
+			available := footerTop - y - s(4)
+			maxEvidence := 0
+			if available > 0 {
+				maxEvidence = int(available / lineH)
+			}
+			if maxEvidence > 4 {
+				maxEvidence = 4
+			}
+			if maxEvidence > len(t.Evidence) {
+				maxEvidence = len(t.Evidence)
+			}
+			for i := 0; i < maxEvidence; i++ {
+				text(dc, "• "+t.Evidence[i], rect(body.Left+s(10), y, width(body)-s(20), lineH), fnts.small, col.muted, DT_LEFT|DT_WORDBREAK|DT_END_ELLIPSIS)
+				y += lineH
+			}
+			if len(t.Evidence) > maxEvidence && y+s(22) <= footerTop {
+				text(dc, fmt.Sprintf("… 另有 %d 条证据，请点“展开”查看", len(t.Evidence)-maxEvidence), rect(body.Left+s(10), y, width(body)-s(20), s(22)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+			}
+		} else if y+s(22) <= footerTop {
+			text(dc, "完整证据和池地址请点右上角“展开”", rect(body.Left+s(8), y, width(body)-s(16), s(22)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+		}
 
-		contractH := s(28)
-		contractTop := body.Bottom - contractH
-		available := contractTop - y - s(4)
-		lineH := s(30)
-		maxEvidence := 0
-		if available > 0 {
-			maxEvidence = int(available / lineH)
-		}
-		if maxEvidence > 4 {
-			maxEvidence = 4
-		}
-		if maxEvidence > len(t.Evidence) {
-			maxEvidence = len(t.Evidence)
-		}
-		for i := 0; i < maxEvidence; i++ {
-			text(dc, "• "+t.Evidence[i], rect(body.Left+s(10), y, width(body)-s(20), lineH), fnts.small, col.muted, DT_LEFT|DT_WORDBREAK|DT_END_ELLIPSIS)
-			y += lineH
-		}
-		if len(t.Evidence) > maxEvidence && y+s(22) <= contractTop {
-			text(dc, fmt.Sprintf("… 另有 %d 条证据已折叠", len(t.Evidence)-maxEvidence), rect(body.Left+s(10), y, width(body)-s(20), s(22)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
-		}
-
-		fillRect(dc, rect(body.Left, contractTop-s(1), width(body), s(1)), col.border)
-		text(dc, "合约："+shortAddr(t.Address), rect(body.Left+s(8), contractTop, width(body)-s(16), contractH), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		fillRect(dc, rect(body.Left, footerTop-s(1), width(body), s(1)), col.border)
+		text(dc, "合约："+shortAddr(t.Address), rect(body.Left+s(8), footerTop+s(2), width(body)-s(16), s(21)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+		text(dc, "完整合约与池地址请点“展开”", rect(body.Left+s(8), footerTop+s(23), width(body)-s(16), s(21)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 	})
 }
 
@@ -1526,19 +1766,19 @@ func drawModal(dc HDC, l layout) {
 	if app.modal == 1 {
 		text(dc, "程序说明", rect(r.Left+s(30), r.Top+s(24), width(r)-s(100), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 		body := "怎么使用\n" +
-			"1. 程序默认每 5 秒增量检查 Base、BSC、Arbitrum 新区块；也可以点‘立即扫描’手动刷新。\n" +
-			"2. 每个候选最右侧都有‘走势图’链接；详情页可打开走势图和区块浏览器。\n" +
+			"1. 程序默认在上一轮结束后最快 5 秒发起下一次增量检查；实际间隔取决于 RPC、DEX 与安全接口耗时。监控 ETH、Base、BSC、Optimism、Polygon、Arbitrum 新区块，也可以点‘立即扫描’手动刷新。\n" +
+			"2. 每个候选最右侧都有‘原始走势’和‘中文资料’链接；详情页优先打开简体中文代币资料，展开后仍可打开原始走势和区块浏览器。\n" +
 			"3. 切换到‘模拟盘’，查看持仓、净盈亏、止损止盈和交易记录。\n" +
-			"4. 候选列表用鼠标滚轮逐行下拉；点击右侧‘展开’可滚动查看完整详情。\n" +
-			"5. 点击‘策略档位’可切换：保守、标准、测试；V2.9 默认自动运行模拟策略。\n\n" +
-			"三种策略档位\n" +
-			"保守：80分、5万美元流动性、观察3分钟；标准：70分、2.5万美元、观察2分钟；测试：55分、1万美元、观察1分钟。测试档用于更快验证开仓、止损和止盈，不代表更安全或更赚钱。严重合约风险在任何档位都禁止开仓。\n\n" +
+			"4. 在候选列表内滚动可逐行浏览代币；在右侧或空白处滚动可下拉整个页面；点击‘展开’查看完整详情。\n" +
+			"5. 点击‘策略档位’可切换：保守、标准、测试、探索、验证；默认验证档使用严格新池资格生成独立纸面样本。\n\n" +
+			"四种策略档位\n" +
+			"保守：80分、5万美元流动性、观察3分钟；标准：70分、2.5万美元、观察2分钟；测试：55分、1万美元、观察1分钟；探索：15分、5千美元、观察约30秒、每笔最多1 USDC；验证：严格新池资格、1万美元、观察约30秒、每笔最多20 USDC。探索与影子样本只用于研究，不代表更安全或更赚钱。严重合约风险在任何档位都禁止开仓。\n\n" +
 			"评分与模拟的区别\n" +
-			"质量分只是研究优先级，不是买入信号。模拟盘会估算 DEX 手续费、Gas、税费和滑点，但无法完全复现实盘的 MEV、报价延迟和无法卖出。\n\n" +
+			"质量分只是研究优先级，不是买入信号。模拟盘会估算 DEX 手续费、按链区分的 Gas、税费和滑点，但无法完全复现实盘的 MEV、报价延迟和无法卖出。ETH 的成本按较高下限保守估算，1 USDC 探索样本成本不足时只进入影子研究。\n\n" +
 			"退出规则\n" +
-			"初始 100 USDC，动态仓位最高 5 USDC，最多 3 个持仓；亏损 8% 止损，盈利 12% 卖一半，盈利 20% 清仓，从最高点回撤 8% 退出。连续亏损 3 笔暂停 3 小时。\n\n" +
+			"验证账户初始 1,000 USDC，动态仓位最高 20 USDC，最多 3 个持仓；净亏损 12% 止损，盈利 30% 与 60% 各卖原始仓位 35%，最后 30% 目标 100% 或从最高点回撤 18% 退出。连续亏损 3 笔暂停 3 小时。\n\n" +
 			"盈利验证\n" +
-			"只按完整自动持仓统计。至少 30 笔、扣除成本后净收益为正、利润因子不低于 1.20、最大回撤不高于 12%，才显示纸面验证通过。\n\n" +
+			"只按完整自动持仓统计。至少 100 笔、扣除成本后净收益为正、利润因子不低于 1.30、最大回撤不高于 15%，才显示纸面验证通过。\n\n" +
 			"注意\n" +
 			"程序不连接钱包、不读取助记词、不发送真实交易。模拟盈利不代表实盘可以盈利。"
 		text(dc, body, rect(r.Left+s(34), r.Top+s(88), width(r)-s(68), height(r)-s(178)), fnts.body, col.muted, DT_LEFT|DT_WORDBREAK)
@@ -1555,7 +1795,7 @@ func expandedDetailBody(l layout) RECT {
 }
 
 func expandedDetailContentHeight(t Token) int32 {
-	return s(430) + int32(len(t.Evidence))*s(48)
+	return s(542) + int32(len(t.Evidence))*s(48)
 }
 
 func clampDetailScroll(l layout) {
@@ -1581,8 +1821,9 @@ func drawExpandedDetails(dc HDC, l layout) {
 		return
 	}
 	t := app.results[app.selected]
-	text(dc, fmt.Sprintf("[%s] %s · 完整详情", chainLabel(t.Chain), t.Symbol), rect(l.modal.Left+s(30), l.modal.Top+s(20), width(l.modal)-s(390), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	drawButton(dc, idModalChart, l.buttons[idModalChart], "走势图 ↗", true, true)
+	text(dc, fmt.Sprintf("[%s] %s · 完整详情", chainLabel(t.Chain), t.Symbol), rect(l.modal.Left+s(30), l.modal.Top+s(20), width(l.modal)-s(490), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	drawButton(dc, idModalChinese, l.buttons[idModalChinese], "中文行情 ↗", true, true)
+	drawButton(dc, idModalChart, l.buttons[idModalChart], "原始走势 ↗", true, false)
 	drawButton(dc, idModalChain, l.buttons[idModalChain], "区块浏览器 ↗", true, false)
 	line(dc, l.modal.Left+s(24), l.modal.Top+s(70), l.modal.Right-s(24), l.modal.Top+s(70), col.border)
 	body := expandedDetailBody(l)
@@ -1591,10 +1832,16 @@ func drawExpandedDetails(dc HDC, l layout) {
 	withClip(dc, body, func() {
 		text(dc, t.Name+"  "+t.Symbol, rect(body.Left, y, width(body)-s(20), s(38)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 		y += s(42)
+		chineseURL := chineseMarketURL(t)
 		chartURL := selectedDEXURL(t)
 		chainURL := explorerTokenURL(t.Chain, t.Address)
-		text(dc, "走势图链接："+chartURL, rect(body.Left, y, width(body)-s(30), s(42)), fnts.small, col.cyan, DT_LEFT|DT_WORDBREAK|DT_NOPREFIX)
+		if chineseURL == "" {
+			chineseURL = "当前候选尚无可核对的精确交易池；请先使用原始走势，避免跳转到错误代币。"
+		}
+		text(dc, "中文行情（GeckoTerminal 简体中文·精确交易池）："+chineseURL, rect(body.Left, y, width(body)-s(30), s(42)), fnts.small, col.cyan, DT_LEFT|DT_WORDBREAK|DT_NOPREFIX)
 		y += s(46)
+		text(dc, "原始走势图（新币精确交易池）："+chartURL, rect(body.Left, y, width(body)-s(30), s(42)), fnts.small, col.cyan, DT_LEFT|DT_WORDBREAK|DT_NOPREFIX)
+		y += s(52)
 		text(dc, "区块浏览器："+chainURL, rect(body.Left, y, width(body)-s(30), s(42)), fnts.small, col.cyan, DT_LEFT|DT_WORDBREAK|DT_NOPREFIX)
 		y += s(52)
 
@@ -1606,7 +1853,9 @@ func drawExpandedDetails(dc HDC, l layout) {
 			{fmt.Sprintf("质量分：%d · %s", t.Score, t.Grade), "安全状态：" + t.Security},
 			{"价格：" + price(t.Price), "流动性：" + money(t.Liquidity)},
 			{"24H成交：" + money(t.Volume24), fmt.Sprintf("24H涨跌：%+.1f%%", t.Change24)},
-			{"池龄：" + ageText(t.AgeHours), fmt.Sprintf("买/卖：%d / %d", t.Buys24, t.Sells24)},
+			{"近5分成交：" + money(t.VolumeM5), fmt.Sprintf("近5分买/卖：%d / %d", t.BuysM5, t.SellsM5)},
+			{"池龄：" + ageText(t.AgeHours), fmt.Sprintf("早期动能证据：%d/100", t.SignalScore)},
+			{"FDV：" + money(t.FDV), fmt.Sprintf("买/卖（24H）：%d / %d", t.Buys24, t.Sells24)},
 			{"数据更新：" + dataFreshness(t.UpdatedAt), "数据来源：" + t.Source},
 		}
 		for _, pair := range metrics {
@@ -1659,11 +1908,13 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		pSetTimer.Call(uintptr(hwnd), 1, 500, 0)
 		pSetTimer.Call(uintptr(hwnd), 2, 1000, 0)
 		loadCache()
-		app.candidatePool = len(loadChainCandidates().Candidates)
+		app.candidatePool = len(loadMultiCandidates().Candidates)
 		loadSimState()
 		loadPreferences()
 		app.monitor = loadMonitorState()
-		addLog("V2.9 已启动：逐行滚动、每币走势图/浏览器链接和可展开完整详情")
+		startFreeRealtimeDiscovery()
+		addLog("V2.21.1 已启动：模拟持仓现已显示买入时间、买入价和现价；不连接钱包")
+		addLog("免费事件监听状态：" + currentRealtimeSummary().Text())
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
 		return 0
@@ -1791,15 +2042,28 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 			invalidate(false)
 			return 0
 		}
-		if app.modal == 0 && app.page == 0 {
+		if app.modal == 0 {
 			l := buildLayout()
-			rows := 3
-			if delta > 0 {
-				rows = -3
+			pt := POINT{
+				X: int32(int16(uint16(lParam & 0xffff))),
+				Y: int32(int16(uint16((lParam >> 16) & 0xffff))),
 			}
-			changed := scrollListRows(l, rows)
-			if changed {
-				selectFirstVisible(l)
+			pScreenToClient.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&pt)))
+			if app.page == 0 && contains(l.table, pt.X, pt.Y) {
+				rows := 3
+				if delta > 0 {
+					rows = -3
+				}
+				changed := scrollListRows(l, rows)
+				if changed {
+					selectFirstVisible(l)
+				}
+			} else {
+				step := s(88)
+				if delta > 0 {
+					step = -step
+				}
+				scrollPage(step)
 			}
 			invalidate(false)
 			return 0
@@ -1832,10 +2096,21 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 	case WM_UPDATE_DONE:
 		finishUpdateTask()
 		return 0
+	case WM_REALTIME_EVENT:
+		// A new factory event can wake the next reconciliation early, but never
+		// starts a scan storm: one full scan is still rate-limited locally.
+		if app.autoRefresh && !app.scanning && time.Since(app.lastPollTry) >= 2*time.Second {
+			app.lastPollTry = time.Now()
+			startScan(false)
+		} else {
+			invalidate(false)
+		}
+		return 0
 	case WM_CLOSE:
 		if app.scanCancel != nil {
 			app.scanCancel()
 		}
+		stopFreeRealtimeDiscovery()
 		pKillTimer.Call(uintptr(hwnd), 1)
 		pKillTimer.Call(uintptr(hwnd), 2)
 		pDestroyWindow.Call(uintptr(hwnd))
@@ -1871,7 +2146,7 @@ func hitTest(x, y int32) int {
 	if app.modal != 0 {
 		ids := []int{idModalClose, idModalNext}
 		if app.modal == 3 {
-			ids = []int{idModalClose, idModalChart, idModalChain}
+			ids = []int{idModalClose, idModalChinese, idModalChart, idModalChain}
 		}
 		for _, id := range ids {
 			if contains(l.buttons[id], x, y) {
@@ -1886,7 +2161,7 @@ func hitTest(x, y int32) int {
 		}
 	}
 	if app.page == 0 {
-		for _, id := range []int{idScan, idStop, idDemo, idExport, idOpenDEX, idTutorial, idDiagnose, idScaleDown, idScaleUp, idAuto, idSimBuy, idFilterAll, idFilterWatch, idFilterSafe, idFilterWait, idSortMode, idClearSearch, idSearchBox, idPrevPage, idNextPage, idWatchToggle, idMonitorCSV, idDetailChart, idDetailChain, idExpandDetail} {
+		for _, id := range []int{idScan, idStop, idDemo, idExport, idOpenDEX, idTutorial, idDiagnose, idScaleDown, idScaleUp, idAuto, idSimBuy, idFilterAll, idFilterWatch, idFilterSafe, idFilterWait, idSortMode, idClearSearch, idSearchBox, idPrevPage, idNextPage, idWatchToggle, idMonitorCSV, idDetailChinese, idDetailChart, idExpandDetail} {
 			if contains(l.buttons[id], x, y) {
 				return id
 			}
@@ -1946,6 +2221,8 @@ func handleClick(id int) {
 		exportCSV()
 	case id == idOpenDEX:
 		openSelectedDEX()
+	case id == idDetailChinese || id == idModalChinese:
+		openSelectedChinese()
 	case id == idDetailChart || id == idModalChart:
 		openSelectedDEX()
 	case id == idDetailChain || id == idModalChain:
@@ -2033,7 +2310,7 @@ func handleClick(id int) {
 		}
 	case id == idAuto:
 		app.autoRefresh = !app.autoRefresh
-		app.toast = "5秒实时监控已" + onOff(app.autoRefresh)
+		app.toast = "事件监听＋5秒回补已" + onOff(app.autoRefresh)
 		app.toastUntil = time.Now().Add(2 * time.Second)
 		if app.autoRefresh {
 			app.lastPollTry = time.Time{}
@@ -2042,9 +2319,11 @@ func handleClick(id int) {
 		invalidate(false)
 	case id == idPageRadar:
 		app.page = 0
+		app.pageScroll = 0
 		invalidate(false)
 	case id == idPageSim:
 		app.page = 1
+		app.pageScroll = 0
 		app.selectedPos = -1
 		app.selectedTrade = -1
 		invalidate(false)
@@ -2074,8 +2353,8 @@ func handleClick(id int) {
 			app.selectedTrade = -1
 			saveSimState()
 			app.resetConfirmUntil = time.Time{}
-			app.toast = "模拟账户已重置为 100 USDC"
-			addLog("模拟账户已由用户重置")
+			app.toast = "模拟账户已重置为 $1,000 验证账户"
+			addLog("模拟账户已由用户重置：$1,000 验证账户与三段止盈已启用")
 		} else {
 			app.resetConfirmUntil = time.Now().Add(5 * time.Second)
 			app.toast = "5秒内再次点击“重置模拟盘”确认清空"
@@ -2136,6 +2415,7 @@ func handleClick(id int) {
 }
 
 func cleanup() {
+	stopFreeRealtimeDiscovery()
 	saveSimState()
 	savePreferences()
 	_ = saveMonitorState(app.monitor)
@@ -2175,7 +2455,7 @@ func startScan(manual bool) {
 	case <-scanOutcomeCh:
 	default:
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	app.scanCancel = cancel
 	app.scanning = true
 	app.scanSeq++
@@ -2184,24 +2464,29 @@ func startScan(manual bool) {
 	if manual {
 		app.status = "正在手动扫描"
 	} else {
-		app.status = "正在实时增量监控"
+		app.status = "正在事件队列回补与多链增量监控"
 	}
 	app.statusKind = 2
 	if manual {
-		addLog("开始手动扫描；最长等待 55 秒，超时会自动停止并保留旧结果")
+		addLog("开始手动扫描；6 链模式最长等待 90 秒，超时会自动停止并保留旧结果")
 	}
 	invalidate(false)
-	held := []string{}
+	held := []multiCandidate{}
 	if app.sim != nil {
 		for _, p := range app.sim.Positions {
-			held = append(held, simKey(p.Chain, p.Address))
+			held = append(held, multiCandidate{Chain: p.Chain, TokenAddress: p.Address, PoolAddress: p.PoolAddress, Factory: "模拟持仓跟踪"})
 		}
 	}
 	if app.monitor != nil {
-		held = append(held, app.monitor.WatchedIdentities()...)
+		for _, identity := range app.monitor.WatchedIdentities() {
+			parts := strings.SplitN(identity, "|", 2)
+			if len(parts) == 2 {
+				held = append(held, multiCandidate{Chain: parts[0], TokenAddress: parts[1], Factory: "可信监控跟踪"})
+			}
+		}
 	}
-	go func(scanID uint64, heldAddresses []string) {
-		tokens, logs, stats, err := multiScanMarket(ctx, heldAddresses)
+	go func(scanID uint64, heldRefs []multiCandidate) {
+		tokens, logs, stats, err := multiScanMarket(ctx, heldRefs)
 		out := scanOutcome{id: scanID, tokens: tokens, stats: stats, logs: logs, err: err, manual: manual}
 		select {
 		case scanOutcomeCh <- out:
@@ -2235,18 +2520,25 @@ func finishScan() {
 	app.activeChains = out.stats.ActiveChains
 	app.candidatePool = out.stats.CandidatePool
 	app.lastBatchAnalyzed = out.stats.BatchAnalyzed
-	quietHeartbeat := false
+	app.strictQualified = out.stats.Qualified
+	app.strictAwaiting = out.stats.Awaiting
+	app.strictRejected = out.stats.Rejected
+	app.strictRejectNotes = out.stats.RejectSummary
+	quietHeartbeat := out.stats.ActiveChains == len(chainModules)
 	logCompletion := out.manual
-	for _, l := range out.logs {
-		if strings.Contains(l, "本轮新发现 0 条") {
-			quietHeartbeat = true
-			break
+	if quietHeartbeat {
+		quietHeartbeat = false
+		for _, l := range out.logs {
+			if strings.Contains(l, "本轮新发现 0 条") {
+				quietHeartbeat = true
+				break
+			}
 		}
 	}
 	if quietHeartbeat && app.autoRefresh && !out.manual && time.Since(app.lastHeartbeatLog) < time.Minute {
 		// Keep the UI and disk log quiet during normal 5-second polling.
 	} else if quietHeartbeat && app.autoRefresh && !out.manual {
-		addLog("实时监控正常：多链区块游标持续推进，当前没有新池事件")
+		addLog("实时回补正常：多链区块游标持续推进，当前没有待确认新池事件；" + currentRealtimeSummary().Text())
 		app.lastHeartbeatLog = time.Now()
 	} else {
 		for _, l := range out.logs {
@@ -2258,7 +2550,7 @@ func finishScan() {
 		if errors.Is(out.err, context.DeadlineExceeded) {
 			app.status = "扫描超时，已自动停止"
 			app.statusKind = 2
-			addLog("扫描超过 55 秒，已自动停止并保留现有结果")
+			addLog("扫描超过 90 秒，已自动停止并保留现有结果")
 		} else if errors.Is(out.err, context.Canceled) {
 			app.status = "扫描已停止"
 			app.statusKind = 2
@@ -2291,8 +2583,21 @@ func finishScan() {
 		l := buildLayout()
 		clampListPage(l)
 		selectFirstVisible(l)
-		app.status = fmt.Sprintf("多链监控正常 %d/3 · 列表 %d / 候选库 %d", app.activeChains, len(app.results), app.candidatePool)
+		app.status = fmt.Sprintf("多链监控正常 %d/%d · 严格通过 %d / 等待索引 %d / 淘汰 %d · 本轮 %.1fs", app.activeChains, len(chainModules), app.strictQualified, app.strictAwaiting, app.strictRejected, app.lastScanDuration.Seconds())
 		app.statusKind = 1
+		for _, alert := range out.stats.StageAlerts {
+			addLog("候选漏斗：" + alert)
+		}
+		for _, alert := range out.stats.RiskAlerts {
+			addLog("风险快照：" + alert)
+		}
+		if len(out.stats.StageAlerts) > 0 {
+			app.toast = out.stats.StageAlerts[0]
+			app.toastUntil = time.Now().Add(6 * time.Second)
+		} else if len(out.stats.RiskAlerts) > 0 {
+			app.toast = out.stats.RiskAlerts[0]
+			app.toastUntil = time.Now().Add(6 * time.Second)
+		}
 		if app.monitor != nil {
 			for _, alert := range app.monitor.Observe(app.results, app.lastScan) {
 				addLog("可信告警：" + alert.Symbol + " · " + alert.Message)
@@ -2306,13 +2611,19 @@ func finishScan() {
 		for _, e := range app.sim.Update(quotes, app.lastScan) {
 			addLog("模拟盘：" + e)
 		}
+		for _, e := range app.sim.UpdateShadows(quotes, app.lastScan) {
+			addLog("影子研究：" + e)
+		}
+		for _, e := range app.sim.ObserveFunnelReviews(out.stats.ReviewQuotes, app.lastScan) {
+			addLog("淘汰复盘：" + e)
+		}
 		for _, e := range app.sim.AutoEvaluate(quotes, app.lastScan) {
 			addLog("模拟盘：" + e)
 		}
 		saveCache()
 		saveSimState()
 		if logCompletion {
-			addLog(fmt.Sprintf("实时更新完成：列表 %d 个 / 候选库 %d 个 / 本轮分析 %d 个 / 耗时 %.1f 秒", len(app.results), app.candidatePool, app.lastBatchAnalyzed, app.lastScanDuration.Seconds()))
+			addLog(fmt.Sprintf("实时更新完成：%s / 列表 %d 个 / 候选库 %d 个 / 本轮分析 %d 个 / 耗时 %.1f 秒", currentRealtimeSummary().Text(), len(app.results), app.candidatePool, app.lastBatchAnalyzed, app.lastScanDuration.Seconds()))
 		}
 	}
 	invalidate(false)
@@ -2325,7 +2636,7 @@ func startDiagnostic() {
 	app.status = "正在进行连接诊断"
 	app.statusKind = 2
 	app.modal = 2
-	app.diagText = "正在测试 三条链 RPC、DEX Screener 与 GoPlus，请稍候……"
+	app.diagText = fmt.Sprintf("正在测试 %d 条链 RPC、DEX Screener 与 GoPlus，请稍候……", len(chainModules))
 	invalidate(false)
 	go func() {
 		diagOutcomeCh <- diagnoseMultiChain()
@@ -2353,6 +2664,17 @@ var directTransport = &http.Transport{
 }
 
 var directHTTPClient = &http.Client{Timeout: 9 * time.Second, Transport: directTransport}
+var bypassProxyTransport = &http.Transport{
+	Proxy:                 nil,
+	DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+	MaxIdleConns:          12,
+	MaxIdleConnsPerHost:   3,
+	MaxConnsPerHost:       3,
+	IdleConnTimeout:       30 * time.Second,
+	TLSHandshakeTimeout:   6 * time.Second,
+	ResponseHeaderTimeout: 7 * time.Second,
+}
+var bypassProxyHTTPClient = &http.Client{Timeout: 9 * time.Second, Transport: bypassProxyTransport}
 var winHTTPSession HINTERNET
 var winHTTPOnce sync.Once
 var winHTTPSessionErr error
@@ -2389,6 +2711,7 @@ func initWinHTTPSession() (HINTERNET, error) {
 
 func closeNetwork() {
 	directTransport.CloseIdleConnections()
+	bypassProxyTransport.CloseIdleConnections()
 	if winHTTPSession != 0 {
 		pWinHttpCloseHandle.Call(uintptr(winHTTPSession))
 		winHTTPSession = 0
@@ -2795,6 +3118,14 @@ func winHTTPPostJSON(ctx context.Context, raw string, body []byte) (httpResult, 
 }
 
 func directHTTPPostJSON(ctx context.Context, raw string, body []byte) (httpResult, error) {
+	return httpPostJSON(ctx, raw, body, directHTTPClient, "Go 直连/环境代理")
+}
+
+func bypassProxyHTTPPostJSON(ctx context.Context, raw string, body []byte) (httpResult, error) {
+	return httpPostJSON(ctx, raw, body, bypassProxyHTTPClient, "Go 强制直连备援")
+}
+
+func httpPostJSON(ctx context.Context, raw string, body []byte, client *http.Client, engine string) (httpResult, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", raw, bytes.NewReader(body))
 	if err != nil {
 		return httpResult{}, err
@@ -2803,7 +3134,7 @@ func directHTTPPostJSON(ctx context.Context, raw string, body []byte) (httpResul
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Set("User-Agent", "MultiChainTokenRadar/2.5")
-	resp, err := directHTTPClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return httpResult{}, err
 	}
@@ -2812,22 +3143,41 @@ func directHTTPPostJSON(ctx context.Context, raw string, body []byte) (httpResul
 	if err != nil {
 		return httpResult{}, err
 	}
-	return httpResult{Status: resp.StatusCode, Body: b, Engine: "Go 直连/环境代理"}, nil
+	return httpResult{Status: resp.StatusCode, Body: b, Engine: engine}, nil
 }
 
 func fetchJSONPost(ctx context.Context, raw string, body []byte) (httpResult, error) {
 	wr, werr := winHTTPPostJSON(ctx, raw, body)
-	if werr == nil {
+	if werr == nil && !retryDirectAfterProxyStatus(wr.Status) {
 		return wr, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return httpResult{}, err
 	}
 	dr, derr := directHTTPPostJSON(ctx, raw, body)
+	if derr == nil && !retryDirectAfterProxyStatus(dr.Status) {
+		return dr, nil
+	}
+	br, berr := bypassProxyHTTPPostJSON(ctx, raw, body)
+	if berr == nil {
+		return br, nil
+	}
 	if derr == nil {
 		return dr, nil
 	}
+	if werr == nil {
+		// Preserve the proxy response if the direct retry cannot connect; it has
+		// the most useful HTTP status for the diagnostics panel.
+		return wr, nil
+	}
 	return httpResult{}, fmt.Errorf("Windows 自动代理失败：%v；直连也失败：%v", werr, derr)
+}
+
+// Some desktop proxies allow JSON-RPC heads but reject or rate-limit the
+// heavier eth_getLogs request. Retry those transient policy statuses with the
+// direct transport before declaring a chain unavailable.
+func retryDirectAfterProxyStatus(status int) bool {
+	return status == http.StatusForbidden || status == http.StatusTooManyRequests || status >= 500
 }
 
 func rpcCallEndpoint(ctx context.Context, endpoint, method string, params any, out any) (string, error) {
@@ -3180,15 +3530,23 @@ type dexPair struct {
 		USD float64 `json:"usd"`
 	} `json:"liquidity"`
 	Volume struct {
+		M5  float64 `json:"m5"`
+		H1  float64 `json:"h1"`
 		H24 float64 `json:"h24"`
 	} `json:"volume"`
 	PriceChange struct {
+		M5  float64 `json:"m5"`
+		H1  float64 `json:"h1"`
 		H24 float64 `json:"h24"`
 	} `json:"priceChange"`
 	Txns struct {
+		M5  struct{ Buys, Sells int } `json:"m5"`
+		H1  struct{ Buys, Sells int } `json:"h1"`
 		H24 struct{ Buys, Sells int } `json:"h24"`
 	} `json:"txns"`
-	Info struct {
+	FDV       float64 `json:"fdv"`
+	MarketCap float64 `json:"marketCap"`
+	Info      struct {
 		Websites []struct {
 			URL string `json:"url"`
 		} `json:"websites"`
@@ -3203,6 +3561,13 @@ type scanStats struct {
 	CandidatePool int
 	BatchAnalyzed int
 	NewFound      int
+	Qualified     int
+	Awaiting      int
+	Rejected      int
+	RejectSummary string
+	StageAlerts   []string
+	RiskAlerts    []string
+	ReviewQuotes  []FunnelReviewQuote
 	Duration      time.Duration
 }
 
@@ -3673,6 +4038,63 @@ func lpLockPercent(sec map[string]any) (locked float64, known bool) {
 	return locked, known
 }
 
+// earlyMomentumEvidence is deliberately separate from the safety/quality score.
+// It summarizes only observable five-minute market activity; it is not a claim
+// that a token has intrinsic value or that a move will continue.
+func earlyMomentumEvidence(p dexPair) (int, []string) {
+	buys, sells := p.Txns.M5.Buys, p.Txns.M5.Sells
+	total := buys + sells
+	if total == 0 {
+		return 0, []string{"近 5 分钟尚无可核验交易活动；不把静态资料误当成早期动能"}
+	}
+	score := 0
+	evidence := []string{fmt.Sprintf("近 5 分钟交易：买 %d / 卖 %d，成交 %s", buys, sells, money(p.Volume.M5))}
+	switch {
+	case total >= 12:
+		score += 25
+	case total >= 6:
+		score += 18
+	case total >= 3:
+		score += 10
+	default:
+		score += 4
+	}
+	if buys >= 3 && buys >= sells*2 {
+		score += 25
+		evidence = append(evidence, "近 5 分钟买入笔数占优")
+	} else if sells > buys {
+		score -= 12
+		evidence = append(evidence, "近 5 分钟卖出笔数占优，动能不足")
+	}
+	if p.Liquidity.USD > 0 && p.Volume.M5 > 0 {
+		turnover := p.Volume.M5 / p.Liquidity.USD
+		switch {
+		case turnover >= 0.01 && turnover <= 0.30:
+			score += 25
+			evidence = append(evidence, fmt.Sprintf("近 5 分钟成交/流动性 %.2f，处于可观察区间", turnover))
+		case turnover > 0.60:
+			score -= 10
+			evidence = append(evidence, fmt.Sprintf("近 5 分钟成交/流动性 %.2f 过高，需排查刷量或剧烈换手", turnover))
+		default:
+			evidence = append(evidence, fmt.Sprintf("近 5 分钟成交/流动性 %.2f", turnover))
+		}
+	}
+	if math.Abs(p.PriceChange.M5) <= 20 {
+		score += 15
+		evidence = append(evidence, fmt.Sprintf("近 5 分钟价格变动 %+.1f%%，未出现极端跳变", p.PriceChange.M5))
+	} else if math.Abs(p.PriceChange.M5) > 40 {
+		score -= 15
+		evidence = append(evidence, fmt.Sprintf("近 5 分钟价格变动 %+.1f%% 过大，不宜追价", p.PriceChange.M5))
+	}
+	if score < 0 {
+		score = 0
+	}
+	if score > 100 {
+		score = 100
+	}
+	return score, evidence
+}
+
 func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 	priceV := fnum(p.PriceUSD)
 	age := 0.0
@@ -3684,6 +4106,8 @@ func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 	}
 	score := 0
 	ev := []string{"质量分用于筛选与排雷，不是自动买入信号"}
+	momentumScore, momentumEvidence := earlyMomentumEvidence(p)
+	ev = append(ev, momentumEvidence...)
 	severe := false
 	securityCap := 100
 
@@ -3779,6 +4203,10 @@ func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 	security := "安全未验证"
 	buyTaxPct, sellTaxPct := 0.0, 0.0
 	taxKnown := false
+	lpLockPct, topHolderPct, creatorPct := 0.0, 0.0, 0.0
+	lpLockKnown := false
+	holderCount := 0
+	creatorAddress := ""
 	if verified && sec != nil {
 		security = "已验证"
 		score += 8
@@ -3842,6 +4270,7 @@ func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 		}
 
 		maxHolder, top10, holderN := holderConcentration(sec)
+		topHolderPct = maxHolder
 		if holderN > 0 {
 			ev = append(ev, fmt.Sprintf("未锁定头部地址：最大 %.1f%%，前列合计 %.1f%%", maxHolder*100, top10*100))
 			switch {
@@ -3860,7 +4289,9 @@ func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 			ev = append(ev, "未取得可用的头部持仓分布")
 		}
 
-		ownerPct := math.Max(fnum(val(sec, "owner_percent")), fnum(val(sec, "creator_percent")))
+		creatorPct = fnum(val(sec, "creator_percent"))
+		creatorAddress = val(sec, "creator_address")
+		ownerPct := math.Max(fnum(val(sec, "owner_percent")), creatorPct)
 		if ownerPct > 0 {
 			switch {
 			case ownerPct <= 0.03:
@@ -3875,6 +4306,7 @@ func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 		}
 
 		if locked, known := lpLockPercent(sec); known {
+			lpLockPct, lpLockKnown = locked, true
 			if locked >= 0.80 {
 				score += 4
 				ev = append(ev, fmt.Sprintf("已识别 LP 锁定比例约 %.1f%%", locked*100))
@@ -3886,6 +4318,7 @@ func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 			ev = append(ev, "未取得可靠的 LP 锁定比例")
 		}
 		if c := val(sec, "holder_count"); c != "" {
+			holderCount = int(fnum(c))
 			ev = append(ev, "GoPlus 持币地址数："+c)
 		}
 	} else {
@@ -3919,9 +4352,12 @@ func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 	return Token{
 		Score: score, Grade: grade, Name: p.BaseToken.Name, Symbol: p.BaseToken.Symbol,
 		Address: strings.ToLower(p.BaseToken.Address), Price: priceV, Liquidity: p.Liquidity.USD,
-		Volume24: p.Volume.H24, AgeHours: age, Change24: p.PriceChange.H24,
-		Buys24: p.Txns.H24.Buys, Sells24: p.Txns.H24.Sells,
+		Volume24: p.Volume.H24, VolumeM5: p.Volume.M5, AgeHours: age, Change24: p.PriceChange.H24, ChangeM5: p.PriceChange.M5,
+		Buys24: p.Txns.H24.Buys, Sells24: p.Txns.H24.Sells, BuysM5: p.Txns.M5.Buys, SellsM5: p.Txns.M5.Sells,
+		FDV: p.FDV, MarketCap: p.MarketCap, SignalScore: momentumScore,
 		BuyTaxPct: buyTaxPct, SellTaxPct: sellTaxPct, TaxKnown: taxKnown,
+		LPLockPct: lpLockPct, LPLockKnown: lpLockKnown, CreatorAddress: creatorAddress, CreatorPercent: creatorPct,
+		TopHolderPercent: topHolderPct, HolderCount: holderCount, RiskCheckedAt: time.Now(),
 		Security: security, Evidence: ev, DEXURL: p.URL,
 	}
 }
@@ -3987,7 +4423,7 @@ func tokensToQuotes(tokens []Token, now time.Time) []SimQuote {
 		if quoteTime.IsZero() {
 			quoteTime = now
 		}
-		out = append(out, SimQuote{Chain: t.Chain, Address: t.Address, Symbol: t.Symbol, Name: t.Name, Price: t.Price, Liquidity: t.Liquidity, BuyTaxPct: t.BuyTaxPct, SellTaxPct: t.SellTaxPct, TaxKnown: t.TaxKnown, Score: t.Score, Security: t.Security, Buys: t.Buys24, Sells: t.Sells24, Volume24: t.Volume24, AgeHours: t.AgeHours, Source: t.Source, Time: quoteTime})
+		out = append(out, SimQuote{Chain: t.Chain, Address: t.Address, PoolAddress: t.PoolAddress, Symbol: t.Symbol, Name: t.Name, Price: t.Price, Liquidity: t.Liquidity, BuyTaxPct: t.BuyTaxPct, SellTaxPct: t.SellTaxPct, TaxKnown: t.TaxKnown, Score: t.Score, SignalScore: t.SignalScore, Security: t.Security, PotentialEligible: t.PotentialEligible, Buys: t.Buys24, Sells: t.Sells24, Volume24: t.Volume24, AgeHours: t.AgeHours, Source: t.Source, Time: quoteTime})
 	}
 	return out
 }
@@ -3997,7 +4433,7 @@ func canManualSimBuy() bool {
 		return false
 	}
 	t := app.results[app.selected]
-	return t.Price > 0 && t.Liquidity > 0 && t.Security != "严重风险" && !strings.Contains(t.Source, "演示") && !app.sim.hasPositionOn(t.Chain, t.Address) && len(app.sim.Positions) < app.sim.Config.MaxPositions && app.sim.Cash >= app.sim.Config.PositionSize
+	return t.PotentialEligible && t.Price > 0 && t.Liquidity > 0 && t.Security != "严重风险" && !strings.Contains(t.Source, "演示") && !app.sim.hasPositionOn(t.Chain, t.Address) && len(app.sim.Positions) < app.sim.Config.MaxPositions && app.sim.Cash >= app.sim.Config.PositionSize
 }
 
 func selectedPositionValid() bool {
@@ -4005,7 +4441,10 @@ func selectedPositionValid() bool {
 }
 
 func manualSimBuy() {
-	if app.selected < 0 || app.selected >= len(app.results) {
+	if !canManualSimBuy() {
+		app.toast = "仅严格信号可模拟买入；审查队列只可查看"
+		app.toastUntil = time.Now().Add(4 * time.Second)
+		invalidate(false)
 		return
 	}
 	t := app.results[app.selected]
@@ -4114,7 +4553,14 @@ func loadSimState() {
 	var st SimState
 	if json.Unmarshal(b, &st) != nil {
 		app.sim = NewSimState()
-		addLog("模拟账户文件损坏，已创建新的 100 USDC 模拟账户")
+		addLog("模拟账户文件损坏，已创建新的 $1,000 验证账户")
+		return
+	}
+	if os.Getenv("MCTR_RESET_VALIDATION") == "1" {
+		st.Reset()
+		app.sim = &st
+		saveSimState()
+		addLog("已按确认清空旧模拟记录：新的 $1,000 验证账户已建立")
 		return
 	}
 	st.Normalize()
@@ -4263,7 +4709,7 @@ func addLog(s string) {
 	if len(app.logs) > 100 {
 		app.logs = app.logs[len(app.logs)-100:]
 	}
-	logPath := filepath.Join(dataDir(), "runtime_v29.log")
+	logPath := filepath.Join(dataDir(), "runtime_v218.log")
 	rotateRuntimeLog(logPath)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
@@ -4310,12 +4756,12 @@ func dataFreshness(t time.Time) string {
 }
 func statusBarText() string {
 	if app.scanning {
-		return "扫描中：Base 链与补充接口最长等待 55 秒；可随时点击“停止扫描”。"
+		return "扫描中：6 条链 HTTP 回补与补充接口最长等待 90 秒；事件监听会继续排队。"
 	}
 	if app.statusKind == 3 {
-		return "Base链或补充接口暂不可用，已保留上次结果；请使用连接诊断。"
+		return "部分链或补充接口暂不可用，已保留上次结果；事件队列会等待 HTTP 回补。"
 	}
-	return "就绪 · 5秒实时监控；模拟盘不连接钱包、不发送真实交易。"
+	return "就绪 · 免费事件 " + currentRealtimeSummary().ShortText() + "，HTTP 持续回补；模拟盘不连接钱包、不发送真实交易。"
 }
 func onOff(b bool) string {
 	if b {
@@ -4429,9 +4875,9 @@ func exportCSV() {
 	defer f.Close()
 	_, _ = f.Write([]byte{0xEF, 0xBB, 0xBF})
 	w := csv.NewWriter(f)
-	_ = w.Write([]string{"链", "质量分", "等级", "代币", "名称", "合约", "走势图链接", "区块浏览器链接", "价格", "流动性", "24H成交", "池龄小时", "24H涨跌", "买入税%", "卖出税%", "税费已确认", "安全", "来源"})
+	_ = w.Write([]string{"链", "质量分", "等级", "代币", "名称", "合约", "中文行情链接", "原始走势图链接", "区块浏览器链接", "价格", "流动性", "24H成交", "池龄小时", "24H涨跌", "买入税%", "卖出税%", "税费已确认", "安全", "来源"})
 	for _, t := range app.results {
-		_ = w.Write([]string{chainLabel(t.Chain), strconv.Itoa(t.Score), t.Grade, t.Symbol, t.Name, t.Address, selectedDEXURL(t), explorerTokenURL(t.Chain, t.Address), strconv.FormatFloat(t.Price, 'f', 8, 64), strconv.FormatFloat(t.Liquidity, 'f', 2, 64), strconv.FormatFloat(t.Volume24, 'f', 2, 64), strconv.FormatFloat(t.AgeHours, 'f', 1, 64), strconv.FormatFloat(t.Change24, 'f', 2, 64), strconv.FormatFloat(t.BuyTaxPct, 'f', 2, 64), strconv.FormatFloat(t.SellTaxPct, 'f', 2, 64), strconv.FormatBool(t.TaxKnown), t.Security, t.Source})
+		_ = w.Write([]string{chainLabel(t.Chain), strconv.Itoa(t.Score), t.Grade, t.Symbol, t.Name, t.Address, chineseMarketURL(t), selectedDEXURL(t), explorerTokenURL(t.Chain, t.Address), strconv.FormatFloat(t.Price, 'f', 8, 64), strconv.FormatFloat(t.Liquidity, 'f', 2, 64), strconv.FormatFloat(t.Volume24, 'f', 2, 64), strconv.FormatFloat(t.AgeHours, 'f', 1, 64), strconv.FormatFloat(t.Change24, 'f', 2, 64), strconv.FormatFloat(t.BuyTaxPct, 'f', 2, 64), strconv.FormatFloat(t.SellTaxPct, 'f', 2, 64), strconv.FormatBool(t.TaxKnown), t.Security, t.Source})
 	}
 	w.Flush()
 	app.toast = "CSV 已导出到桌面"
@@ -4455,11 +4901,42 @@ func selectedDEXURL(t Token) string {
 	return u
 }
 
+// chineseMarketURL deliberately links an exact pool instead of a token-symbol
+// search. GeckoTerminal's /zh pages have a reliable Simplified Chinese UI and
+// retain the pool address, which prevents an old or similarly named token from
+// being substituted for a newly discovered market.
+func chineseMarketURL(t Token) string {
+	pool := strings.TrimSpace(t.PoolAddress)
+	if !validAddress(pool) {
+		return ""
+	}
+	network := "base"
+	switch normalizeChain(t.Chain) {
+	case "ethereum":
+		network = "eth"
+	case "bsc":
+		network = "bsc"
+	case "optimism":
+		network = "optimism"
+	case "polygon":
+		network = "polygon_pos"
+	case "arbitrum":
+		network = "arbitrum"
+	}
+	return "https://www.geckoterminal.com/zh/" + network + "/pools/" + url.PathEscape(strings.ToLower(pool))
+}
+
 func explorerTokenURL(chain, address string) string {
-	base := "https://basescan.org/token/"
+	base := "https://etherscan.io/token/"
 	switch normalizeChain(chain) {
+	case "base":
+		base = "https://basescan.org/token/"
 	case "bsc":
 		base = "https://bscscan.com/token/"
+	case "optimism":
+		base = "https://optimistic.etherscan.io/token/"
+	case "polygon":
+		base = "https://polygonscan.com/token/"
 	case "arbitrum":
 		base = "https://arbiscan.io/token/"
 	}
@@ -4474,6 +4951,20 @@ func openSelectedExplorer() {
 	pShellExecuteW.Call(0, uintptr(unsafe.Pointer(utf16Ptr("open"))), uintptr(unsafe.Pointer(utf16Ptr(u))), 0, 0, SW_SHOWNORMAL)
 }
 
+func openSelectedChinese() {
+	if app.selected < 0 || app.selected >= len(app.results) {
+		return
+	}
+	t := app.results[app.selected]
+	u := chineseMarketURL(t)
+	if u == "" {
+		addLog("中文行情未打开：该候选尚无可核对的精确交易池地址；请使用原始走势")
+		invalidate(false)
+		return
+	}
+	pShellExecuteW.Call(0, uintptr(unsafe.Pointer(utf16Ptr("open"))), uintptr(unsafe.Pointer(utf16Ptr(u))), 0, 0, SW_SHOWNORMAL)
+}
+
 func main() {
 	// Win32 windows and their message queues are thread-affine. Keep the entire
 	// UI loop on one OS thread; otherwise the Go scheduler may migrate the
@@ -4482,8 +4973,8 @@ func main() {
 	// Per-monitor v2 DPI awareness. -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
-	className := utf16Ptr("MultiChainTokenRadarV29Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.9 · 可滚动详情与代币链接")
+	className := utf16Ptr("MultiChainTokenRadarV221Window")
+	title := utf16Ptr("Multi-Chain Token Radar V2.21.1 · 模拟仓开仓信息与策略验证")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {
