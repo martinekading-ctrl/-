@@ -42,7 +42,7 @@ func (s *SimState) automatedOutcomes() []simPositionOutcome {
 	}
 	byID := map[int64]simPositionOutcome{}
 	for _, tr := range s.Trades {
-		if !tr.Automated || open[tr.PositionID] {
+		if !tr.Automated || tr.Exploratory || open[tr.PositionID] {
 			continue
 		}
 		o := byID[tr.PositionID]
@@ -137,6 +137,10 @@ func (s *SimState) riskPause(now time.Time) (bool, time.Duration) {
 
 func (s *SimState) dynamicPositionSize(q SimQuote) float64 {
 	amount := math.Min(s.Config.PositionSize, s.Cash)
+	if s.AutoProfile == AutoProfileExplore {
+		// Exploration is for collecting paper evidence, not for scaling a bet.
+		amount = math.Min(amount, 1)
+	}
 	// At most two basis points of observed pool liquidity. This keeps the paper
 	// fill from pretending a thin pool can absorb the same size as a deep pool.
 	if liquidityCap := q.Liquidity * 0.0002; liquidityCap > 0 {

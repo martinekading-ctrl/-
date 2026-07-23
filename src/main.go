@@ -949,19 +949,21 @@ func drawCommonHeader(dc HDC, l layout, subtitle string) {
 }
 
 func drawSimUI(dc HDC, l layout) {
-	drawCommonHeader(dc, l, "V2.10 整页下拉浏览 · 自动策略验证 · 不连接钱包")
+	drawCommonHeader(dc, l, "V2.11 探索样本与拒绝统计 · 自动策略验证 · 不连接钱包")
 	if app.sim == nil {
 		app.sim = NewSimState()
 	}
 	m := app.sim.Metrics(tokensToQuotes(app.results, time.Now()))
 	v := app.sim.Validation()
+	exploreOpen, exploreClosed, explorePnL := app.sim.ExplorationSummary()
+	shadowOpen, shadowClosed, shadowWins, shadowAvg := app.sim.ShadowSummary()
 
 	roundRect(dc, l.toolbar, col.panel, col.border, s(9))
 	drawButton(dc, idSimSell, l.buttons[idSimSell], "卖出选中", selectedPositionValid(), false)
 	drawButton(dc, idSimCloseAll, l.buttons[idSimCloseAll], "全部平仓", len(app.sim.Positions) > 0, false)
 	drawButton(dc, idSimExport, l.buttons[idSimExport], "导出记录", len(app.sim.Trades) > 0, false)
 	drawButton(dc, idSimReset, l.buttons[idSimReset], "重置模拟盘", true, false)
-	drawButton(dc, idSimProfile, l.buttons[idSimProfile], "策略档位："+app.sim.ProfileName(), true, app.sim.AutoProfile == AutoProfileTest)
+	drawButton(dc, idSimProfile, l.buttons[idSimProfile], "策略档位："+app.sim.ProfileName(), true, app.sim.AutoProfile == AutoProfileExplore)
 	ar := l.buttons[idSimAuto]
 	roundRect(dc, ar, col.panel2, col.border, s(8))
 	sw := rect(ar.Left+s(12), ar.Top+s(10), s(40), s(20))
@@ -977,9 +979,9 @@ func drawSimUI(dc HDC, l layout) {
 	ellipse(dc, rect(knobX, sw.Top+s(3), s(14), s(14)), col.text, col.text)
 	text(dc, "自动模拟策略", rect(sw.Right+s(10), ar.Top, ar.Right-sw.Right-s(18), height(ar)), fnts.small, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 
-	vals := []string{fmt.Sprintf("%.2f", m.Equity), fmt.Sprintf("%.2f", m.Cash), fmt.Sprintf("%+.2f", m.NetPnL), fmt.Sprintf("%.1f%%", v.WinRate)}
-	labels := []string{"模拟总资产 USDC", "可用余额", "累计净盈亏", "自动完整交易胜率"}
-	subs := []string{fmt.Sprintf("持仓市值 %.2f", m.PositionValue), fmt.Sprintf("当前持仓 %d / %d", len(app.sim.Positions), app.sim.Config.MaxPositions), fmt.Sprintf("最大回撤 %.1f%%", m.MaxDrawdown), fmt.Sprintf("样本 %d / %d · PF %s", v.ClosedPositions, v.RequiredPositions, v.ProfitFactorText())}
+	vals := []string{fmt.Sprintf("%.2f", m.Equity), fmt.Sprintf("%.2f", m.Cash), fmt.Sprintf("%+.2f", m.NetPnL), fmt.Sprintf("%d / %d", exploreClosed, shadowClosed)}
+	labels := []string{"模拟总资产 USDC", "可用余额", "累计净盈亏", "探索 / 影子闭合样本"}
+	subs := []string{fmt.Sprintf("持仓市值 %.2f", m.PositionValue), fmt.Sprintf("当前持仓 %d / %d", len(app.sim.Positions), app.sim.Config.MaxPositions), fmt.Sprintf("最大回撤 %.1f%%", m.MaxDrawdown), fmt.Sprintf("探索进行 %d，净 %+.2f · 影子进行 %d，胜 %d，均值 %+.1f%%", exploreOpen, explorePnL, shadowOpen, shadowWins, shadowAvg)}
 	accents := []uint32{col.blue, col.cyan, col.green, col.yellow}
 	for i, r := range l.cards {
 		roundRect(dc, r, col.panel, col.border, s(9))
@@ -1144,15 +1146,32 @@ func drawSimDetail(dc HDC, r RECT, m SimMetrics) {
 	y := body.Top
 	rules := app.sim.rules()
 	v := app.sim.Validation()
+	diag := app.sim.LastEntryStats
+	exploreOpen, exploreClosed, explorePnL := app.sim.ExplorationSummary()
+	shadowOpen, shadowClosed, shadowWins, shadowAvg := app.sim.ShadowSummary()
+	positionCap := app.sim.Config.PositionSize
+	if app.sim.AutoProfile == AutoProfileExplore && positionCap > 1 {
+		positionCap = 1
+	}
 	securityLine := "• 需要安全已验证，税费必须已确认"
 	if !rules.RequireVerified {
 		securityLine = "• 测试档允许安全未验证/税费未知，但严重风险仍硬性禁止"
+	}
+	if app.sim.AutoProfile == AutoProfileExplore {
+		securityLine = "• 探索档只用 ≤1 USDC 纸面仓位；严重风险、零分和已知高税费仍硬性禁止"
 	}
 	patternLine := "• 需要回调后重新走强，避免贴近短线高点"
 	if !rules.RequirePullback {
 		patternLine = "• 测试档只要求基础上涨趋势，目的是尽快验证模拟系统"
 	}
-	lines := []string{fmt.Sprintf("验证状态：%s · 完整自动交易 %d/%d", v.Status, v.ClosedPositions, v.RequiredPositions), fmt.Sprintf("自动净收益：%+.2f · 利润因子：%s · 期望/笔：%+.3f", v.NetPnL, v.ProfitFactorText(), v.Expectancy), fmt.Sprintf("自动样本最大回撤：%.1f%% · 通过门槛≤%.0f%%", v.MaxDrawdown, app.sim.Config.MaxValidationDrawdown), fmt.Sprintf("连续亏损：%d/%d · 达线暂停 %.0f 分钟", v.ConsecutiveLosses, app.sim.Config.MaxConsecutiveLosses, app.sim.Config.LossCooldownMinutes), "", fmt.Sprintf("当前自动策略：%s档 · 动态仓位≤%.2f USDC", app.sim.ProfileName(), app.sim.Config.PositionSize), fmt.Sprintf("• 评分≥%d，流动性≥%s，观察≥%.0f分钟，池龄≤%.0f小时", rules.MinScore, money(rules.MinLiquidity), rules.ObserveMinutes, rules.MaxAgeHours), securityLine, fmt.Sprintf("• 已知买卖税≤%.0f%%，买卖笔数比≥%.2f", rules.MaxTaxPct, rules.MinBuySellRatio), patternLine, "• 同链只开一个仓位；流动性不稳或短时暴涨拒绝追入", "", "成本已计入 DEX 费、Gas、税费和流动性滑点；模拟盈利不等于实盘盈利。"}
+	if app.sim.AutoProfile == AutoProfileExplore {
+		patternLine = "• 探索档观察 30 秒；只要基础价格不走弱即可记录小额纸面样本"
+	}
+	flowLine := fmt.Sprintf("• 已知买卖税≤%.0f%%，买卖笔数比≥%.2f", rules.MaxTaxPct, rules.MinBuySellRatio)
+	if rules.MinBuySellRatio == 0 {
+		flowLine = fmt.Sprintf("• 已知买卖税≤%.0f%%；不以买卖笔数为硬门槛", rules.MaxTaxPct)
+	}
+	lines := []string{fmt.Sprintf("正式验证：%s · 严格完整交易 %d/%d", v.Status, v.ClosedPositions, v.RequiredPositions), fmt.Sprintf("严格策略净收益：%+.2f · PF %s · 期望/笔 %+.3f", v.NetPnL, v.ProfitFactorText(), v.Expectancy), fmt.Sprintf("本轮评估：候选 %d · 合格 %d · 探索开仓 %d · 新影子 %d", diag.Evaluated, diag.Eligible, diag.Opened, diag.ShadowStarted), "拦截原因：" + diag.TopReasons(3), fmt.Sprintf("探索样本：进行 %d · 已闭合 %d · 净盈亏 %+.2f（不计正式验证）", exploreOpen, exploreClosed, explorePnL), fmt.Sprintf("影子样本：进行 %d · 已闭合 %d · 胜 %d · 平均变动 %+.1f%%", shadowOpen, shadowClosed, shadowWins, shadowAvg), "", fmt.Sprintf("当前自动策略：%s档 · 动态仓位≤%.2f USDC", app.sim.ProfileName(), positionCap), fmt.Sprintf("• 评分≥%d，流动性≥%s，观察≥%.1f分钟，池龄≤%.0f小时", rules.MinScore, money(rules.MinLiquidity), rules.ObserveMinutes, rules.MaxAgeHours), securityLine, flowLine, patternLine, "• 同链只开一个仓位；流动性不稳或短时暴涨仍拒绝追入", "", "成本已计入 DEX 费、Gas、税费和流动性滑点；探索与影子结果不能当作盈利证明。"}
 	for _, ln := range lines {
 		h := s(25)
 		if ln == "" {
@@ -1611,9 +1630,9 @@ func drawModal(dc HDC, l layout) {
 			"2. 每个候选最右侧都有‘走势图’链接；详情页可打开走势图和区块浏览器。\n" +
 			"3. 切换到‘模拟盘’，查看持仓、净盈亏、止损止盈和交易记录。\n" +
 			"4. 在候选列表内滚动可逐行浏览代币；在右侧或空白处滚动可下拉整个页面；点击‘展开’查看完整详情。\n" +
-			"5. 点击‘策略档位’可切换：保守、标准、测试；V2.10 默认自动运行模拟策略。\n\n" +
-			"三种策略档位\n" +
-			"保守：80分、5万美元流动性、观察3分钟；标准：70分、2.5万美元、观察2分钟；测试：55分、1万美元、观察1分钟。测试档用于更快验证开仓、止损和止盈，不代表更安全或更赚钱。严重合约风险在任何档位都禁止开仓。\n\n" +
+			"5. 点击‘策略档位’可切换：保守、标准、测试、探索；V2.11 默认探索档，用 ≤1 USDC 生成纸面样本。\n\n" +
+			"四种策略档位\n" +
+			"保守：80分、5万美元流动性、观察3分钟；标准：70分、2.5万美元、观察2分钟；测试：55分、1万美元、观察1分钟；探索：15分、5千美元、观察约30秒、每笔最多1 USDC。探索与影子样本只用于研究，不代表更安全或更赚钱。严重合约风险在任何档位都禁止开仓。\n\n" +
 			"评分与模拟的区别\n" +
 			"质量分只是研究优先级，不是买入信号。模拟盘会估算 DEX 手续费、Gas、税费和滑点，但无法完全复现实盘的 MEV、报价延迟和无法卖出。\n\n" +
 			"退出规则\n" +
@@ -1744,7 +1763,7 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		loadSimState()
 		loadPreferences()
 		app.monitor = loadMonitorState()
-		addLog("V2.10 已启动：整页下拉浏览、详情防重叠、逐行代币滚动和完整链接")
+		addLog("V2.11 已启动：探索样本、影子研究、拒绝原因统计和严格验证分离")
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
 		return 0
@@ -2401,6 +2420,9 @@ func finishScan() {
 		app.sim.AddSnapshots(quotes, app.lastScan)
 		for _, e := range app.sim.Update(quotes, app.lastScan) {
 			addLog("模拟盘：" + e)
+		}
+		for _, e := range app.sim.UpdateShadows(quotes, app.lastScan) {
+			addLog("影子研究：" + e)
 		}
 		for _, e := range app.sim.AutoEvaluate(quotes, app.lastScan) {
 			addLog("模拟盘：" + e)
@@ -4359,7 +4381,7 @@ func addLog(s string) {
 	if len(app.logs) > 100 {
 		app.logs = app.logs[len(app.logs)-100:]
 	}
-	logPath := filepath.Join(dataDir(), "runtime_v210.log")
+	logPath := filepath.Join(dataDir(), "runtime_v211.log")
 	rotateRuntimeLog(logPath)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
@@ -4578,8 +4600,8 @@ func main() {
 	// Per-monitor v2 DPI awareness. -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
-	className := utf16Ptr("MultiChainTokenRadarV29Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.10 · 整页下拉与清晰详情")
+	className := utf16Ptr("MultiChainTokenRadarV211Window")
+	title := utf16Ptr("Multi-Chain Token Radar V2.11 · 探索样本与拒绝统计")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {

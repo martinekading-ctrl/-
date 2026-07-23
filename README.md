@@ -1,6 +1,6 @@
-# Multi-Chain Token Radar V2.10
+# Multi-Chain Token Radar V2.11
 
-V2.10 is a Windows x64 research application for Base, BSC, and Arbitrum. Its
+V2.11 is a Windows x64 research application for Base, BSC, and Arbitrum. Its
 current workflow is:
 
 1. discover recently created DEX pools;
@@ -13,6 +13,24 @@ current workflow is:
 The application does not connect to a wallet, store private keys, sign orders,
 or submit real transactions. A profitable paper result is not a promise of
 future or live-trading profit.
+
+## V2.11 exploration samples and rejection statistics
+
+- Existing simulation accounts migrate to the default **探索** profile: a
+  capped, 1-USDC paper-only research lane with a 15-point score floor, 5,000
+  USDC liquidity floor, and a roughly 30-second observation window.
+- Serious risk, zero-quality candidates, stale prices, and known taxes above
+  20% remain hard stops even in exploration.
+- Exploration positions use tighter exits and a 30-minute maximum hold so they
+  produce reviewable paper outcomes instead of accumulating indefinitely.
+- Near-miss candidates with a score of at least 10 can become **shadow
+  samples**. Shadow samples never reserve simulated cash, never appear as
+  trades, and never count as profitability validation.
+- The strategy panel now shows the latest evaluated-candidate count, eligible
+  count, opened exploration samples, started shadow samples, and the top three
+  rejection reasons.
+- Strict validation excludes exploration positions and shadow samples. Only
+  non-exploratory automated positions can satisfy the paper-validation gate.
 
 ## V2.10 full-page scrolling and readable details
 
@@ -61,7 +79,7 @@ hours. The existing daily loss limit remains active.
 
 ## Profitability validation
 
-V2.10 counts one fully closed automated position as one validation sample.
+V2.11 counts one fully closed non-exploratory automated position as one validation sample.
 Partial exits from the same position are combined, and manual paper trades are
 excluded. The app displays paper validation as passed only when all of the
 following are true:

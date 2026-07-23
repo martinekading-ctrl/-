@@ -197,11 +197,66 @@ func TestV28MigrationEnablesOnlyPaperAutomation(t *testing.T) {
 	s.Config.MaxHoldingHours = 24
 	s.Config.LiquidityDropPct = 30
 	s.Normalize()
-	if s.Version != 2 || !s.AutoEnabled {
-		t.Fatalf("expected V2.8 paper migration: version=%d auto=%v", s.Version, s.AutoEnabled)
+	if s.Version != 3 || !s.AutoEnabled || s.AutoProfile != AutoProfileExplore {
+		t.Fatalf("expected V2.11 exploration migration: version=%d auto=%v profile=%d", s.Version, s.AutoEnabled, s.AutoProfile)
 	}
 	if s.Config.MaxHoldingHours != 6 || s.Config.LiquidityDropPct != 25 {
 		t.Fatalf("expected V2.8 risk defaults: %+v", s.Config)
+	}
+}
+
+func TestExploreProfileCreatesCappedPaperSampleAndClosesIt(t *testing.T) {
+	s := NewSimState()
+	s.AutoEnabled = true
+	s.AutoProfile = AutoProfileExplore
+	now := time.Now()
+	q := testQuote(1.03)
+	q.Chain = "base"
+	q.Score = 15
+	q.Liquidity = 6000
+	q.Security = "安全未验证"
+	q.TaxKnown = false
+	q.Buys, q.Sells = 1, 0
+	q.Time = now
+	key := simKey(q.Chain, q.Address)
+	for i, px := range []float64{1.00, 1.01, 1.02, 1.03} {
+		s.Snapshots[key] = append(s.Snapshots[key], PriceSnapshot{Time: now.Add(time.Duration(-30+i*10) * time.Second), Price: px, Liquidity: q.Liquidity})
+	}
+	if events := s.AutoEvaluate([]SimQuote{q}, now); len(events) == 0 || len(s.Positions) != 1 {
+		t.Fatalf("explore profile should create a paper sample: events=%v positions=%d", events, len(s.Positions))
+	}
+	p := s.Positions[0]
+	if !p.Exploratory || p.EntryCost > 1 {
+		t.Fatalf("explore position must be flagged and capped: %+v", p)
+	}
+	q.Time = now.Add(31 * time.Minute)
+	if events := s.Update([]SimQuote{q}, q.Time); len(events) == 0 || len(s.Positions) != 0 || len(s.Trades) != 1 || !s.Trades[0].Exploratory {
+		t.Fatalf("explore sample should close on its short horizon: events=%v positions=%d trades=%+v", events, len(s.Positions), s.Trades)
+	}
+	if v := s.Validation(); v.ClosedPositions != 0 {
+		t.Fatalf("explore samples must not be counted as strict validation: %+v", v)
+	}
+}
+
+func TestNearMissCreatesAndClosesShadowSample(t *testing.T) {
+	s := NewSimState()
+	s.AutoEnabled = true
+	s.AutoProfile = AutoProfileExplore
+	now := time.Now()
+	q := testQuote(1)
+	q.Score = 14
+	q.Liquidity = 7000
+	q.Security = "安全未验证"
+	q.TaxKnown = false
+	q.Time = now
+	s.AutoEvaluate([]SimQuote{q}, now)
+	if len(s.ShadowSamples) != 1 || s.LastEntryStats.Rejections["评分不足"] != 1 || s.LastEntryStats.ShadowStarted != 1 {
+		t.Fatalf("near miss should be diagnosed and shadowed: stats=%+v shadows=%+v", s.LastEntryStats, s.ShadowSamples)
+	}
+	q.Price = 1.05
+	q.Time = now.Add(31 * time.Minute)
+	if events := s.UpdateShadows([]SimQuote{q}, q.Time); len(events) == 0 || len(s.ShadowSamples) != 0 || len(s.ShadowOutcomes) != 1 {
+		t.Fatalf("shadow sample should close into research telemetry: events=%v active=%d outcomes=%d", events, len(s.ShadowSamples), len(s.ShadowOutcomes))
 	}
 }
 
