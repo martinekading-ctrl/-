@@ -611,6 +611,56 @@ func tokenMetadataModule(ctx context.Context, m chainModule, address string) (st
 	return tokenCallStringModule(ctx, m, address, "0x06fdde03"), tokenCallStringModule(ctx, m, address, "0x95d89b41")
 }
 
+type securityBackoffState struct {
+	Failures int
+	Until    time.Time
+	LastErr  string
+}
+
+var securityBackoffMu sync.Mutex
+var securityBackoffs = map[string]securityBackoffState{}
+
+func securityBackoffDuration(failures int) time.Duration {
+	if failures <= 0 {
+		return 0
+	}
+	// Public security endpoints can rate-limit a busy desktop scanner. Back off
+	// per chain rather than retrying every scan; cap at 30 minutes so recovery is
+	// eventually rechecked without creating a request storm.
+	d := time.Minute << minInt(failures-1, 5)
+	if d > 30*time.Minute {
+		return 30 * time.Minute
+	}
+	return d
+}
+
+func securityRequestAllowed(chain string, now time.Time) error {
+	securityBackoffMu.Lock()
+	defer securityBackoffMu.Unlock()
+	b := securityBackoffs[normalizeChain(chain)]
+	if now.Before(b.Until) {
+		return fmt.Errorf("GoPlus 安全接口退避中，%.0f 分钟后重试：%s", math.Ceil(b.Until.Sub(now).Minutes()), b.LastErr)
+	}
+	return nil
+}
+
+func recordSecurityFailure(chain string, now time.Time, err error) {
+	securityBackoffMu.Lock()
+	defer securityBackoffMu.Unlock()
+	key := normalizeChain(chain)
+	b := securityBackoffs[key]
+	b.Failures++
+	b.LastErr = shortErr(err)
+	b.Until = now.Add(securityBackoffDuration(b.Failures))
+	securityBackoffs[key] = b
+}
+
+func clearSecurityBackoff(chain string) {
+	securityBackoffMu.Lock()
+	delete(securityBackoffs, normalizeChain(chain))
+	securityBackoffMu.Unlock()
+}
+
 func fetchSecurityForChain(ctx context.Context, m chainModule, addresses []string) (map[string]map[string]any, error) {
 	out := map[string]map[string]any{}
 	missing := []string{}
@@ -629,6 +679,9 @@ func fetchSecurityForChain(ctx context.Context, m chainModule, addresses []strin
 	if len(missing) == 0 {
 		return out, nil
 	}
+	if e := securityRequestAllowed(m.Key, now); e != nil {
+		return out, e
+	}
 	var resp struct {
 		Code    int                       `json:"code"`
 		Message string                    `json:"message"`
@@ -636,11 +689,15 @@ func fetchSecurityForChain(ctx context.Context, m chainModule, addresses []strin
 	}
 	u := "https://api.gopluslabs.io/api/v1/token_security/" + m.ChainID + "?contract_addresses=" + url.QueryEscape(strings.Join(missing, ","))
 	if e := getJSON(ctx, u, &resp); e != nil {
+		recordSecurityFailure(m.Key, now, e)
 		return out, e
 	}
 	if resp.Code != 1 || resp.Result == nil {
-		return out, fmt.Errorf("GoPlus %s 业务错误：code=%d message=%s", m.Short, resp.Code, resp.Message)
+		e := fmt.Errorf("GoPlus %s 业务错误：code=%d message=%s", m.Short, resp.Code, resp.Message)
+		recordSecurityFailure(m.Key, now, e)
+		return out, e
 	}
+	clearSecurityBackoff(m.Key)
 	securityCacheMu.Lock()
 	for k, v := range resp.Result {
 		a := strings.ToLower(k)

@@ -33,6 +33,9 @@ future or live-trading profit.
 - Trades and positions created before this integrity upgrade remain visible for
   audit, but are excluded from hardened strategy validation. Only positions
   opened under V2.19's exact-pool controls can contribute to a validation pass.
+- GoPlus request failures now use a bounded, per-chain exponential backoff.
+  During a cooldown, the UI and log report that security evidence is unavailable
+  and strict candidates fail closed instead of repeatedly calling the endpoint.
 
 ## V2.18 stable Simplified-Chinese market pages
 

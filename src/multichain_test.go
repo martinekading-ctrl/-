@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -178,6 +179,23 @@ func TestResolveTrackedCandidatePreservesEntryPool(t *testing.T) {
 	)
 	if fromCache.PoolAddress != entryPool {
 		t.Fatalf("cached entry pool was overwritten: got %s want %s", fromCache.PoolAddress, entryPool)
+	}
+}
+
+func TestSecurityBackoffIsBoundedAndRecovers(t *testing.T) {
+	if securityBackoffDuration(0) != 0 || securityBackoffDuration(1) != time.Minute || securityBackoffDuration(2) != 2*time.Minute || securityBackoffDuration(5) != 16*time.Minute || securityBackoffDuration(6) != 30*time.Minute || securityBackoffDuration(99) != 30*time.Minute {
+		t.Fatalf("unexpected security backoff schedule")
+	}
+	chain := "base"
+	clearSecurityBackoff(chain)
+	now := time.Now()
+	recordSecurityFailure(chain, now, fmt.Errorf("rate limited"))
+	if err := securityRequestAllowed(chain, now.Add(10*time.Second)); err == nil {
+		t.Fatal("request must be blocked during security backoff")
+	}
+	clearSecurityBackoff(chain)
+	if err := securityRequestAllowed(chain, now); err != nil {
+		t.Fatalf("cleared backoff should allow recovery: %v", err)
 	}
 }
 
