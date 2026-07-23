@@ -1,6 +1,6 @@
-# Multi-Chain Token Radar V2.14
+# Multi-Chain Token Radar V2.15
 
-V2.14 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
+V2.15 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
 Polygon, and Arbitrum. Its
 current workflow is:
 
@@ -14,6 +14,28 @@ current workflow is:
 The application does not connect to a wallet, store private keys, sign orders,
 or submit real transactions. A profitable paper result is not a promise of
 future or live-trading profit.
+
+## V2.15 candidate funnel, risk snapshots, and review lane
+
+- The radar cards now expose the latest funnel: strict candidates shown,
+  candidates that are waiting for exact-pool indexing, and candidates rejected
+  in the current scan with the leading reasons.
+- A transition into or out of strict observation creates a visible local alert.
+  The application also compares successive public risk snapshots for strict
+  candidates and alerts on material liquidity loss, LP-lock reduction,
+  creator-share growth, or top-holder concentration growth.
+- Candidate details now show public GoPlus fields for LP-lock status,
+  creator share, largest holder share, and holder count. Missing data remains
+  explicitly marked as unverified rather than being treated as safe.
+- Rejected but priced, non-hard-risk candidates enter a separate 60-minute
+  **funnel review** lane. It records later public price/liquidity movement so
+  the user can learn which gates skipped moves. It never allocates paper cash,
+  opens a position, or contributes to profitability validation.
+
+These are public-data diagnostics, not proof that LP is permanently safe or
+that a creator cannot act through another address. They are intended to make
+the filter auditable and improve future parameter decisions without lowering
+the strict entry gate.
 
 ## V2.14 strict market-first research queue
 

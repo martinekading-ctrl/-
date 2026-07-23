@@ -845,6 +845,59 @@ func topQualificationReasons(reasons map[string]int, limit int) string {
 	return strings.Join(parts, "；")
 }
 
+func appendFunnelAlert(rows []string, message string) []string {
+	if message == "" {
+		return rows
+	}
+	for _, row := range rows {
+		if row == message {
+			return rows
+		}
+	}
+	if len(rows) >= 8 {
+		return rows
+	}
+	return append(rows, message)
+}
+
+func riskSnapshotAlerts(old, current Token) []string {
+	if old.RiskCheckedAt.IsZero() {
+		return nil
+	}
+	prefix := fmt.Sprintf("[%s] %s", chainLabel(current.Chain), current.Symbol)
+	alerts := []string{}
+	if old.Liquidity > 0 && current.Liquidity > 0 && current.Liquidity < old.Liquidity*0.70 {
+		alerts = append(alerts, fmt.Sprintf("%s 流动性下降 %.0f%%", prefix, (1-current.Liquidity/old.Liquidity)*100))
+	}
+	if old.LPLockKnown && current.LPLockKnown && current.LPLockPct+0.10 < old.LPLockPct {
+		alerts = append(alerts, fmt.Sprintf("%s LP 锁定比例 %.0f%% → %.0f%%", prefix, old.LPLockPct*100, current.LPLockPct*100))
+	}
+	if old.CreatorPercent > 0 && current.CreatorPercent > old.CreatorPercent+0.05 {
+		alerts = append(alerts, fmt.Sprintf("%s 创建者持仓 %.1f%% → %.1f%%", prefix, old.CreatorPercent*100, current.CreatorPercent*100))
+	}
+	if old.TopHolderPercent > 0 && current.TopHolderPercent > old.TopHolderPercent+0.10 {
+		alerts = append(alerts, fmt.Sprintf("%s 最大持仓 %.1f%% → %.1f%%", prefix, old.TopHolderPercent*100, current.TopHolderPercent*100))
+	}
+	return alerts
+}
+
+func strictRiskWarnings(t Token) []string {
+	prefix := fmt.Sprintf("[%s] %s", chainLabel(t.Chain), t.Symbol)
+	alerts := []string{}
+	if !t.LPLockKnown {
+		alerts = append(alerts, prefix+" LP 锁定状态未验证")
+	} else if t.LPLockPct < 0.80 {
+		alerts = append(alerts, fmt.Sprintf("%s LP 锁定仅 %.0f%%", prefix, t.LPLockPct*100))
+	}
+	if t.CreatorPercent > 0.10 {
+		alerts = append(alerts, fmt.Sprintf("%s 创建者持仓 %.1f%%", prefix, t.CreatorPercent*100))
+	}
+	if t.TopHolderPercent > 0.30 {
+		alerts = append(alerts, fmt.Sprintf("%s 最大持仓 %.1f%%", prefix, t.TopHolderPercent*100))
+	}
+	return alerts
+}
+
 func multiScanMarket(ctx context.Context, heldKeys []string) ([]Token, []string, scanStats, error) {
 	started := time.Now()
 	all, logs, latest, newFound, active, err := discoverAllModules(ctx)
@@ -1052,6 +1105,23 @@ func multiScanMarket(ctx context.Context, heldKeys []string) ([]Token, []string,
 				t.PotentialStage = "淘汰：" + reason
 				t.Evidence = append([]string{"未通过严格市场首发资格：" + reason}, t.Evidence...)
 			}
+		}
+		if t.PotentialEligible && !old.PotentialEligible {
+			stats.StageAlerts = appendFunnelAlert(stats.StageAlerts, fmt.Sprintf("[%s] %s 进入严格观察", m.Short, t.Symbol))
+			for _, alert := range strictRiskWarnings(t) {
+				stats.RiskAlerts = appendFunnelAlert(stats.RiskAlerts, alert)
+			}
+		}
+		if old.PotentialEligible && !t.PotentialEligible {
+			stats.StageAlerts = appendFunnelAlert(stats.StageAlerts, fmt.Sprintf("[%s] %s 退出严格观察：%s", m.Short, t.Symbol, t.PotentialStage))
+		}
+		if old.PotentialEligible || t.PotentialEligible {
+			for _, alert := range riskSnapshotAlerts(old, t) {
+				stats.RiskAlerts = appendFunnelAlert(stats.RiskAlerts, alert)
+			}
+		}
+		if !t.PotentialEligible && marketOK && t.Price > 0 && t.Security != "严重风险" && !strings.Contains(t.PotentialStage, "安全硬门槛") {
+			stats.ReviewQuotes = append(stats.ReviewQuotes, FunnelReviewQuote{Chain: t.Chain, Address: t.Address, Symbol: t.Symbol, Price: t.Price, Liquidity: t.Liquidity, Stage: t.PotentialStage, Security: t.Security, Time: t.UpdatedAt})
 		}
 		cache[k] = t
 	}

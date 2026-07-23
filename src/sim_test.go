@@ -207,8 +207,8 @@ func TestV28MigrationEnablesOnlyPaperAutomation(t *testing.T) {
 	s.Config.MaxHoldingHours = 24
 	s.Config.LiquidityDropPct = 30
 	s.Normalize()
-	if s.Version != 3 || !s.AutoEnabled || s.AutoProfile != AutoProfileExplore {
-		t.Fatalf("expected V2.11 exploration migration: version=%d auto=%v profile=%d", s.Version, s.AutoEnabled, s.AutoProfile)
+	if s.Version != 4 || !s.AutoEnabled || s.AutoProfile != AutoProfileExplore {
+		t.Fatalf("expected current paper-only migration: version=%d auto=%v profile=%d", s.Version, s.AutoEnabled, s.AutoProfile)
 	}
 	if s.Config.MaxHoldingHours != 6 || s.Config.LiquidityDropPct != 25 {
 		t.Fatalf("expected V2.8 risk defaults: %+v", s.Config)
@@ -267,6 +267,26 @@ func TestNearMissCreatesAndClosesShadowSample(t *testing.T) {
 	q.Time = now.Add(31 * time.Minute)
 	if events := s.UpdateShadows([]SimQuote{q}, q.Time); len(events) == 0 || len(s.ShadowSamples) != 0 || len(s.ShadowOutcomes) != 1 {
 		t.Fatalf("shadow sample should close into research telemetry: events=%v active=%d outcomes=%d", events, len(s.ShadowSamples), len(s.ShadowOutcomes))
+	}
+}
+
+func TestFunnelReviewTracksRejectedCandidateWithoutPaperTrade(t *testing.T) {
+	s := NewSimState()
+	now := time.Now()
+	q := FunnelReviewQuote{Chain: "base", Address: "0x1111111111111111111111111111111111111111", Symbol: "SKIP", Price: 1, Liquidity: 20_000, Stage: "淘汰：近 1 小时买入笔数不足", Security: "已验证", Time: now}
+	if events := s.ObserveFunnelReviews([]FunnelReviewQuote{q}, now); len(events) != 0 {
+		t.Fatalf("opening a review must not create a close event: %v", events)
+	}
+	if len(s.FunnelSamples) != 1 || len(s.Positions) != 0 || len(s.Trades) != 0 {
+		t.Fatalf("funnel review must not allocate paper cash: samples=%d positions=%d trades=%d", len(s.FunnelSamples), len(s.Positions), len(s.Trades))
+	}
+	q.Price = 1.25
+	q.Time = now.Add(61 * time.Minute)
+	if events := s.ObserveFunnelReviews([]FunnelReviewQuote{q}, q.Time); len(events) != 1 {
+		t.Fatalf("expected completed funnel review, got %v", events)
+	}
+	if len(s.FunnelSamples) != 0 || len(s.FunnelOutcomes) != 1 || s.FunnelOutcomes[0].PriceChangePct < 24.9 {
+		t.Fatalf("unexpected funnel outcome: %+v", s.FunnelOutcomes)
 	}
 }
 

@@ -274,6 +274,13 @@ type Token struct {
 	SellTaxPct        float64   `json:"sell_tax_pct"`
 	TaxKnown          bool      `json:"tax_known"`
 	Security          string    `json:"security"`
+	LPLockPct         float64   `json:"lp_lock_pct"`
+	LPLockKnown       bool      `json:"lp_lock_known"`
+	CreatorAddress    string    `json:"creator_address"`
+	CreatorPercent    float64   `json:"creator_percent"`
+	TopHolderPercent  float64   `json:"top_holder_percent"`
+	HolderCount       int       `json:"holder_count"`
+	RiskCheckedAt     time.Time `json:"risk_checked_at,omitempty"`
 	PotentialEligible bool      `json:"potential_eligible"`
 	PotentialStage    string    `json:"potential_stage"`
 	Evidence          []string  `json:"evidence"`
@@ -960,14 +967,14 @@ func drawCommonHeader(dc HDC, l layout, subtitle string) {
 }
 
 func drawSimUI(dc HDC, l layout) {
-	drawCommonHeader(dc, l, "V2.11 探索样本与拒绝统计 · 自动策略验证 · 不连接钱包")
+	drawCommonHeader(dc, l, "V2.15 淘汰复盘、风险快照与严格模拟验证 · 不连接钱包")
 	if app.sim == nil {
 		app.sim = NewSimState()
 	}
 	m := app.sim.Metrics(tokensToQuotes(app.results, time.Now()))
 	v := app.sim.Validation()
-	exploreOpen, exploreClosed, explorePnL := app.sim.ExplorationSummary()
-	shadowOpen, shadowClosed, shadowWins, shadowAvg := app.sim.ShadowSummary()
+	_, shadowClosed, shadowWins, shadowAvg := app.sim.ShadowSummary()
+	funnelOpen, funnelClosed, funnelWins, funnelAvg := app.sim.FunnelReviewSummary()
 
 	roundRect(dc, l.toolbar, col.panel, col.border, s(9))
 	drawButton(dc, idSimSell, l.buttons[idSimSell], "卖出选中", selectedPositionValid(), false)
@@ -990,9 +997,14 @@ func drawSimUI(dc HDC, l layout) {
 	ellipse(dc, rect(knobX, sw.Top+s(3), s(14), s(14)), col.text, col.text)
 	text(dc, "自动模拟策略", rect(sw.Right+s(10), ar.Top, ar.Right-sw.Right-s(18), height(ar)), fnts.small, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 
-	vals := []string{fmt.Sprintf("%.2f", m.Equity), fmt.Sprintf("%.2f", m.Cash), fmt.Sprintf("%+.2f", m.NetPnL), fmt.Sprintf("%d / %d", exploreClosed, shadowClosed)}
-	labels := []string{"模拟总资产 USDC", "可用余额", "累计净盈亏", "探索 / 影子闭合样本"}
-	subs := []string{fmt.Sprintf("持仓市值 %.2f", m.PositionValue), fmt.Sprintf("当前持仓 %d / %d", len(app.sim.Positions), app.sim.Config.MaxPositions), fmt.Sprintf("最大回撤 %.1f%%", m.MaxDrawdown), fmt.Sprintf("探索进行 %d，净 %+.2f · 影子进行 %d，胜 %d，均值 %+.1f%%", exploreOpen, explorePnL, shadowOpen, shadowWins, shadowAvg)}
+	vals := []string{fmt.Sprintf("%.2f", m.Equity), fmt.Sprintf("%.2f", m.Cash), fmt.Sprintf("%+.2f", m.NetPnL), fmt.Sprintf("%d / %d", funnelOpen, funnelClosed)}
+	labels := []string{"模拟总资产 USDC", "可用余额", "累计净盈亏", "淘汰复盘（进行 / 闭合）"}
+	subs := []string{
+		fmt.Sprintf("持仓市值 %.2f", m.PositionValue),
+		fmt.Sprintf("当前持仓 %d / %d", len(app.sim.Positions), app.sim.Config.MaxPositions),
+		fmt.Sprintf("最大回撤 %.1f%%", m.MaxDrawdown),
+		fmt.Sprintf("胜 %d，均值 %+.1f%% · 影子闭合 %d，胜 %d，均值 %+.1f%%", funnelWins, funnelAvg, shadowClosed, shadowWins, shadowAvg),
+	}
 	accents := []uint32{col.blue, col.cyan, col.green, col.yellow}
 	for i, r := range l.cards {
 		roundRect(dc, r, col.panel, col.border, s(9))
@@ -1160,6 +1172,7 @@ func drawSimDetail(dc HDC, r RECT, m SimMetrics) {
 	diag := app.sim.LastEntryStats
 	exploreOpen, exploreClosed, explorePnL := app.sim.ExplorationSummary()
 	shadowOpen, shadowClosed, shadowWins, shadowAvg := app.sim.ShadowSummary()
+	funnelOpen, funnelClosed, funnelWins, funnelAvg := app.sim.FunnelReviewSummary()
 	positionCap := app.sim.Config.PositionSize
 	if app.sim.AutoProfile == AutoProfileExplore && positionCap > 1 {
 		positionCap = 1
@@ -1182,7 +1195,7 @@ func drawSimDetail(dc HDC, r RECT, m SimMetrics) {
 	if rules.MinBuySellRatio == 0 {
 		flowLine = fmt.Sprintf("• 已知买卖税≤%.0f%%；不以买卖笔数为硬门槛", rules.MaxTaxPct)
 	}
-	lines := []string{fmt.Sprintf("正式验证：%s · 严格完整交易 %d/%d", v.Status, v.ClosedPositions, v.RequiredPositions), fmt.Sprintf("严格策略净收益：%+.2f · PF %s · 期望/笔 %+.3f", v.NetPnL, v.ProfitFactorText(), v.Expectancy), fmt.Sprintf("本轮评估：候选 %d · 合格 %d · 探索开仓 %d · 新影子 %d", diag.Evaluated, diag.Eligible, diag.Opened, diag.ShadowStarted), "拦截原因：" + diag.TopReasons(3), fmt.Sprintf("探索样本：进行 %d · 已闭合 %d · 净盈亏 %+.2f（不计正式验证）", exploreOpen, exploreClosed, explorePnL), fmt.Sprintf("影子样本：进行 %d · 已闭合 %d · 胜 %d · 平均变动 %+.1f%%", shadowOpen, shadowClosed, shadowWins, shadowAvg), "", fmt.Sprintf("当前自动策略：%s档 · 动态仓位≤%.2f USDC", app.sim.ProfileName(), positionCap), fmt.Sprintf("• 评分≥%d，流动性≥%s，观察≥%.1f分钟，池龄≤%.0f小时", rules.MinScore, money(rules.MinLiquidity), rules.ObserveMinutes, rules.MaxAgeHours), securityLine, flowLine, patternLine, "• 同链只开一个仓位；流动性不稳或短时暴涨仍拒绝追入", "", "成本已计入 DEX 费、Gas、税费和流动性滑点；探索与影子结果不能当作盈利证明。"}
+	lines := []string{fmt.Sprintf("正式验证：%s · 严格完整交易 %d/%d", v.Status, v.ClosedPositions, v.RequiredPositions), fmt.Sprintf("严格策略净收益：%+.2f · PF %s · 期望/笔 %+.3f", v.NetPnL, v.ProfitFactorText(), v.Expectancy), fmt.Sprintf("本轮评估：候选 %d · 合格 %d · 探索开仓 %d · 新影子 %d", diag.Evaluated, diag.Eligible, diag.Opened, diag.ShadowStarted), "拦截原因：" + diag.TopReasons(3), fmt.Sprintf("探索样本：进行 %d · 已闭合 %d · 净盈亏 %+.2f（不计正式验证）", exploreOpen, exploreClosed, explorePnL), fmt.Sprintf("影子样本：进行 %d · 已闭合 %d · 胜 %d · 平均变动 %+.1f%%", shadowOpen, shadowClosed, shadowWins, shadowAvg), fmt.Sprintf("淘汰复盘：进行 %d · 已闭合 %d · 反向上涨 %d · 平均变动 %+.1f%%（不影响策略验证）", funnelOpen, funnelClosed, funnelWins, funnelAvg), "", fmt.Sprintf("当前自动策略：%s档 · 动态仓位≤%.2f USDC", app.sim.ProfileName(), positionCap), fmt.Sprintf("• 评分≥%d，流动性≥%s，观察≥%.1f分钟，池龄≤%.0f小时", rules.MinScore, money(rules.MinLiquidity), rules.ObserveMinutes, rules.MaxAgeHours), securityLine, flowLine, patternLine, "• 同链只开一个仓位；流动性不稳或短时暴涨仍拒绝追入", "", "成本已计入 DEX 费、Gas、税费和流动性滑点；探索、影子与淘汰复盘都不能当作盈利证明。"}
 	for _, ln := range lines {
 		h := s(25)
 		if ln == "" {
@@ -1257,9 +1270,9 @@ func drawRadarUI(dc HDC, l layout) {
 	ellipse(dc, rect(knobX, sw.Top+s(3), s(14), s(14)), col.text, col.text)
 	text(dc, "5秒实时监控", rect(sw.Right+s(10), ar.Top, ar.Right-sw.Right-s(18), height(ar)), fnts.small, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	// Cards
-	vals := []string{strconv.Itoa(len(app.results)), verifiedCount(), watchCount(), strconv.Itoa(app.candidatePool)}
-	labels := []string{"严格雷达", "安全已验证", "自选关注", "多链候选库"}
-	subs := []string{"仅展示精确新池与安全门槛均通过的标的", "第三方结果仍需人工复核", "持续快照与异常告警", fmt.Sprintf("%d 链最多保留 %d 个", len(chainModules), len(chainModules)*80)}
+	vals := []string{strconv.Itoa(len(app.results)), fmt.Sprintf("%d / %d", app.strictQualified, app.strictAwaiting), strconv.Itoa(app.strictRejected), strconv.Itoa(app.candidatePool)}
+	labels := []string{"严格雷达", "本轮通过 / 等待", "本轮淘汰", "多链候选库"}
+	subs := []string{"仅展示精确新池与安全门槛均通过的标的", "等待精确池市场索引后会再次检查", app.strictRejectNotes, fmt.Sprintf("%d 链最多保留 %d 个", len(chainModules), len(chainModules)*80)}
 	accents := []uint32{col.blue, col.cyan, col.green, col.yellow}
 	for i, r := range l.cards {
 		roundRect(dc, r, col.panel, col.border, s(9))
@@ -1555,6 +1568,12 @@ func drawDetails(dc HDC, r RECT) {
 		} else {
 			metrics = append(metrics, [2]string{"买卖税：未确认", "自动策略不会开仓"})
 		}
+		if t.LPLockKnown {
+			metrics = append(metrics, [2]string{fmt.Sprintf("LP 锁定：%.1f%%", t.LPLockPct*100), fmt.Sprintf("创建者持仓：%.1f%%", t.CreatorPercent*100)})
+		} else {
+			metrics = append(metrics, [2]string{"LP 锁定：未验证", fmt.Sprintf("创建者持仓：%.1f%%", t.CreatorPercent*100)})
+		}
+		metrics = append(metrics, [2]string{fmt.Sprintf("最大持仓：%.1f%%", t.TopHolderPercent*100), fmt.Sprintf("持币地址：%d", t.HolderCount)})
 		footerH := s(48)
 		footerTop := body.Bottom - footerH
 		for _, pair := range metrics {
@@ -1778,7 +1797,7 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		loadSimState()
 		loadPreferences()
 		app.monitor = loadMonitorState()
-		addLog("V2.14 已启动：严格市场首发雷达已启用；仅展示通过精确池、安全与早期交易门槛的模拟研究候选")
+		addLog("V2.15 已启动：候选漏斗、LP/创建者风险快照与淘汰复盘已启用；保持本地模拟，不连接钱包")
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
 		return 0
@@ -2432,6 +2451,19 @@ func finishScan() {
 		selectFirstVisible(l)
 		app.status = fmt.Sprintf("多链监控正常 %d/%d · 严格通过 %d / 等待索引 %d / 淘汰 %d", app.activeChains, len(chainModules), app.strictQualified, app.strictAwaiting, app.strictRejected)
 		app.statusKind = 1
+		for _, alert := range out.stats.StageAlerts {
+			addLog("候选漏斗：" + alert)
+		}
+		for _, alert := range out.stats.RiskAlerts {
+			addLog("风险快照：" + alert)
+		}
+		if len(out.stats.StageAlerts) > 0 {
+			app.toast = out.stats.StageAlerts[0]
+			app.toastUntil = time.Now().Add(6 * time.Second)
+		} else if len(out.stats.RiskAlerts) > 0 {
+			app.toast = out.stats.RiskAlerts[0]
+			app.toastUntil = time.Now().Add(6 * time.Second)
+		}
 		if app.monitor != nil {
 			for _, alert := range app.monitor.Observe(app.results, app.lastScan) {
 				addLog("可信告警：" + alert.Symbol + " · " + alert.Message)
@@ -2447,6 +2479,9 @@ func finishScan() {
 		}
 		for _, e := range app.sim.UpdateShadows(quotes, app.lastScan) {
 			addLog("影子研究：" + e)
+		}
+		for _, e := range app.sim.ObserveFunnelReviews(out.stats.ReviewQuotes, app.lastScan) {
+			addLog("淘汰复盘：" + e)
 		}
 		for _, e := range app.sim.AutoEvaluate(quotes, app.lastScan) {
 			addLog("模拟盘：" + e)
@@ -3390,6 +3425,9 @@ type scanStats struct {
 	Awaiting      int
 	Rejected      int
 	RejectSummary string
+	StageAlerts   []string
+	RiskAlerts    []string
+	ReviewQuotes  []FunnelReviewQuote
 	Duration      time.Duration
 }
 
@@ -3966,6 +4004,10 @@ func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 	security := "安全未验证"
 	buyTaxPct, sellTaxPct := 0.0, 0.0
 	taxKnown := false
+	lpLockPct, topHolderPct, creatorPct := 0.0, 0.0, 0.0
+	lpLockKnown := false
+	holderCount := 0
+	creatorAddress := ""
 	if verified && sec != nil {
 		security = "已验证"
 		score += 8
@@ -4029,6 +4071,7 @@ func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 		}
 
 		maxHolder, top10, holderN := holderConcentration(sec)
+		topHolderPct = maxHolder
 		if holderN > 0 {
 			ev = append(ev, fmt.Sprintf("未锁定头部地址：最大 %.1f%%，前列合计 %.1f%%", maxHolder*100, top10*100))
 			switch {
@@ -4047,7 +4090,9 @@ func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 			ev = append(ev, "未取得可用的头部持仓分布")
 		}
 
-		ownerPct := math.Max(fnum(val(sec, "owner_percent")), fnum(val(sec, "creator_percent")))
+		creatorPct = fnum(val(sec, "creator_percent"))
+		creatorAddress = val(sec, "creator_address")
+		ownerPct := math.Max(fnum(val(sec, "owner_percent")), creatorPct)
 		if ownerPct > 0 {
 			switch {
 			case ownerPct <= 0.03:
@@ -4062,6 +4107,7 @@ func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 		}
 
 		if locked, known := lpLockPercent(sec); known {
+			lpLockPct, lpLockKnown = locked, true
 			if locked >= 0.80 {
 				score += 4
 				ev = append(ev, fmt.Sprintf("已识别 LP 锁定比例约 %.1f%%", locked*100))
@@ -4073,6 +4119,7 @@ func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 			ev = append(ev, "未取得可靠的 LP 锁定比例")
 		}
 		if c := val(sec, "holder_count"); c != "" {
+			holderCount = int(fnum(c))
 			ev = append(ev, "GoPlus 持币地址数："+c)
 		}
 	} else {
@@ -4109,6 +4156,8 @@ func scorePair(p dexPair, sec map[string]any, verified bool) Token {
 		Volume24: p.Volume.H24, AgeHours: age, Change24: p.PriceChange.H24,
 		Buys24: p.Txns.H24.Buys, Sells24: p.Txns.H24.Sells,
 		BuyTaxPct: buyTaxPct, SellTaxPct: sellTaxPct, TaxKnown: taxKnown,
+		LPLockPct: lpLockPct, LPLockKnown: lpLockKnown, CreatorAddress: creatorAddress, CreatorPercent: creatorPct,
+		TopHolderPercent: topHolderPct, HolderCount: holderCount, RiskCheckedAt: time.Now(),
 		Security: security, Evidence: ev, DEXURL: p.URL,
 	}
 }
@@ -4450,7 +4499,7 @@ func addLog(s string) {
 	if len(app.logs) > 100 {
 		app.logs = app.logs[len(app.logs)-100:]
 	}
-	logPath := filepath.Join(dataDir(), "runtime_v214.log")
+	logPath := filepath.Join(dataDir(), "runtime_v215.log")
 	rotateRuntimeLog(logPath)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
@@ -4703,8 +4752,8 @@ func main() {
 	// Per-monitor v2 DPI awareness. -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
-	className := utf16Ptr("MultiChainTokenRadarV214Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.14 · 严格市场首发研究与模拟")
+	className := utf16Ptr("MultiChainTokenRadarV215Window")
+	title := utf16Ptr("Multi-Chain Token Radar V2.15 · 候选漏斗、风险快照与模拟复盘")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {

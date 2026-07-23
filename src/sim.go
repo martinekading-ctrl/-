@@ -158,6 +158,51 @@ type ShadowOutcome struct {
 	Reason     string    `json:"reason"`
 }
 
+// FunnelReviewQuote is a priced candidate that did not enter the strict radar.
+// It is used only to learn what the filter skipped; it never reserves paper
+// cash and must not be read as a trade recommendation.
+type FunnelReviewQuote struct {
+	Chain     string    `json:"chain"`
+	Address   string    `json:"address"`
+	Symbol    string    `json:"symbol"`
+	Price     float64   `json:"price"`
+	Liquidity float64   `json:"liquidity"`
+	Stage     string    `json:"stage"`
+	Security  string    `json:"security"`
+	Time      time.Time `json:"time"`
+}
+
+type FunnelReviewSample struct {
+	ID               int64     `json:"id"`
+	Chain            string    `json:"chain"`
+	Address          string    `json:"address"`
+	Symbol           string    `json:"symbol"`
+	EntryPrice       float64   `json:"entry_price"`
+	CurrentPrice     float64   `json:"current_price"`
+	EntryLiquidity   float64   `json:"entry_liquidity"`
+	CurrentLiquidity float64   `json:"current_liquidity"`
+	Stage            string    `json:"stage"`
+	OpenedAt         time.Time `json:"opened_at"`
+	LastQuoteAt      time.Time `json:"last_quote_at"`
+}
+
+type FunnelReviewOutcome struct {
+	ID                 int64     `json:"id"`
+	Chain              string    `json:"chain"`
+	Address            string    `json:"address"`
+	Symbol             string    `json:"symbol"`
+	Stage              string    `json:"stage"`
+	EntryPrice         float64   `json:"entry_price"`
+	ExitPrice          float64   `json:"exit_price"`
+	EntryLiquidity     float64   `json:"entry_liquidity"`
+	ExitLiquidity      float64   `json:"exit_liquidity"`
+	PriceChangePct     float64   `json:"price_change_pct"`
+	LiquidityChangePct float64   `json:"liquidity_change_pct"`
+	OpenedAt           time.Time `json:"opened_at"`
+	ClosedAt           time.Time `json:"closed_at"`
+	CloseReason        string    `json:"close_reason"`
+}
+
 // EntryDiagnostics is reset on each completed market evaluation. It makes the
 // exact blockers visible instead of silently producing a zero-trade night.
 type EntryDiagnostics struct {
@@ -183,30 +228,33 @@ type SimMetrics struct {
 }
 
 type SimState struct {
-	Version        int                        `json:"version"`
-	Config         SimConfig                  `json:"config"`
-	Cash           float64                    `json:"cash"`
-	Positions      []SimPosition              `json:"positions"`
-	Trades         []SimTrade                 `json:"trades"`
-	Snapshots      map[string][]PriceSnapshot `json:"snapshots"`
-	AutoEnabled    bool                       `json:"auto_enabled"`
-	AutoProfile    int                        `json:"auto_profile"`
-	NextID         int64                      `json:"next_id"`
-	EquityPeak     float64                    `json:"equity_peak"`
-	MaxDrawdown    float64                    `json:"max_drawdown"`
-	LastAutoEntry  map[string]time.Time       `json:"last_auto_entry"`
-	LastShadow     map[string]time.Time       `json:"last_shadow"`
-	ShadowSamples  []ShadowSample             `json:"shadow_samples"`
-	ShadowOutcomes []ShadowOutcome            `json:"shadow_outcomes"`
-	LastEntryStats EntryDiagnostics           `json:"last_entry_stats"`
+	Version          int                        `json:"version"`
+	Config           SimConfig                  `json:"config"`
+	Cash             float64                    `json:"cash"`
+	Positions        []SimPosition              `json:"positions"`
+	Trades           []SimTrade                 `json:"trades"`
+	Snapshots        map[string][]PriceSnapshot `json:"snapshots"`
+	AutoEnabled      bool                       `json:"auto_enabled"`
+	AutoProfile      int                        `json:"auto_profile"`
+	NextID           int64                      `json:"next_id"`
+	EquityPeak       float64                    `json:"equity_peak"`
+	MaxDrawdown      float64                    `json:"max_drawdown"`
+	LastAutoEntry    map[string]time.Time       `json:"last_auto_entry"`
+	LastShadow       map[string]time.Time       `json:"last_shadow"`
+	ShadowSamples    []ShadowSample             `json:"shadow_samples"`
+	ShadowOutcomes   []ShadowOutcome            `json:"shadow_outcomes"`
+	FunnelSamples    []FunnelReviewSample       `json:"funnel_samples"`
+	FunnelOutcomes   []FunnelReviewOutcome      `json:"funnel_outcomes"`
+	LastFunnelReview map[string]time.Time       `json:"last_funnel_review"`
+	LastEntryStats   EntryDiagnostics           `json:"last_entry_stats"`
 }
 
 func NewSimState() *SimState {
 	cfg := DefaultSimConfig()
 	return &SimState{
-		Version: 3, Config: cfg, Cash: cfg.InitialCash, Snapshots: map[string][]PriceSnapshot{},
+		Version: 4, Config: cfg, Cash: cfg.InitialCash, Snapshots: map[string][]PriceSnapshot{},
 		AutoEnabled: true, NextID: 1, EquityPeak: cfg.InitialCash,
-		LastAutoEntry: map[string]time.Time{}, LastShadow: map[string]time.Time{}, AutoProfile: AutoProfileExplore,
+		LastAutoEntry: map[string]time.Time{}, LastShadow: map[string]time.Time{}, LastFunnelReview: map[string]time.Time{}, AutoProfile: AutoProfileExplore,
 	}
 }
 
@@ -297,6 +345,9 @@ func (s *SimState) Normalize() {
 	if s.LastShadow == nil {
 		s.LastShadow = map[string]time.Time{}
 	}
+	if s.LastFunnelReview == nil {
+		s.LastFunnelReview = map[string]time.Time{}
+	}
 	if s.LastEntryStats.Rejections == nil {
 		s.LastEntryStats.Rejections = map[string]int{}
 	}
@@ -338,6 +389,12 @@ func (s *SimState) Normalize() {
 		// user can cycle back to conservative, standard, or test at any time.
 		s.Version = 3
 		s.AutoProfile = AutoProfileExplore
+	}
+	if oldVersion < 4 {
+		// V2.15 adds a separate, no-cash review lane for candidates rejected by
+		// the strict market-first funnel. It cannot create positions or affect
+		// paper-validation statistics.
+		s.Version = 4
 	}
 }
 
@@ -1028,6 +1085,118 @@ func (s *SimState) ShadowSummary() (active, closed, wins int, average float64) {
 	for _, outcome := range s.ShadowOutcomes {
 		average += outcome.PnLPct
 		if outcome.PnLPct > 0 {
+			wins++
+		}
+	}
+	average /= float64(closed)
+	return
+}
+
+// ObserveFunnelReviews records the subsequent public-price movement of a
+// filtered candidate. It deliberately ignores hard security failures, never
+// buys anything, and does not influence strategy validation.
+func (s *SimState) ObserveFunnelReviews(candidates []FunnelReviewQuote, now time.Time) []string {
+	s.Normalize()
+	quotes := map[string]FunnelReviewQuote{}
+	for _, q := range candidates {
+		q.Chain = normalizeChain(q.Chain)
+		q.Address = normalizeAddress(q.Address)
+		if q.Address == "" || q.Price <= 0 {
+			continue
+		}
+		if q.Time.IsZero() {
+			q.Time = now
+		}
+		quotes[simKey(q.Chain, q.Address)] = q
+	}
+	events := []string{}
+	active := make([]FunnelReviewSample, 0, len(s.FunnelSamples))
+	for _, sample := range s.FunnelSamples {
+		if q, ok := quotes[simKey(sample.Chain, sample.Address)]; ok {
+			sample.CurrentPrice = q.Price
+			sample.CurrentLiquidity = q.Liquidity
+			sample.LastQuoteAt = q.Time
+		}
+		exitPrice := sample.CurrentPrice
+		if exitPrice <= 0 {
+			exitPrice = sample.EntryPrice
+		}
+		priceMove, liquidityMove := 0.0, 0.0
+		if sample.EntryPrice > 0 {
+			priceMove = (exitPrice/sample.EntryPrice - 1) * 100
+		}
+		if sample.EntryLiquidity > 0 && sample.CurrentLiquidity > 0 {
+			liquidityMove = (sample.CurrentLiquidity/sample.EntryLiquidity - 1) * 100
+		}
+		closeReason := ""
+		switch {
+		case priceMove <= -50:
+			closeReason = "价格跌幅达到 50%"
+		case priceMove >= 100:
+			closeReason = "价格涨幅达到 100%"
+		case now.Sub(sample.OpenedAt) >= time.Hour:
+			closeReason = "60 分钟复盘窗口完成"
+		}
+		if closeReason == "" {
+			active = append(active, sample)
+			continue
+		}
+		s.FunnelOutcomes = append(s.FunnelOutcomes, FunnelReviewOutcome{
+			ID: sample.ID, Chain: sample.Chain, Address: sample.Address, Symbol: sample.Symbol, Stage: sample.Stage,
+			EntryPrice: sample.EntryPrice, ExitPrice: exitPrice, EntryLiquidity: sample.EntryLiquidity, ExitLiquidity: sample.CurrentLiquidity,
+			PriceChangePct: priceMove, LiquidityChangePct: liquidityMove, OpenedAt: sample.OpenedAt, ClosedAt: now, CloseReason: closeReason,
+		})
+		events = append(events, fmt.Sprintf("淘汰复盘 %s 完成：%+.1f%%（%s）", sample.Symbol, priceMove, closeReason))
+	}
+	s.FunnelSamples = active
+	if len(s.FunnelOutcomes) > 500 {
+		s.FunnelOutcomes = append([]FunnelReviewOutcome(nil), s.FunnelOutcomes[len(s.FunnelOutcomes)-500:]...)
+	}
+	if len(s.FunnelSamples) >= 60 {
+		return events
+	}
+	for _, q := range candidates {
+		q.Chain = normalizeChain(q.Chain)
+		q.Address = normalizeAddress(q.Address)
+		if q.Address == "" || q.Price <= 0 || q.Security == "严重风险" || strings.Contains(q.Stage, "安全硬门槛") {
+			continue
+		}
+		key := simKey(q.Chain, q.Address)
+		if last := s.LastFunnelReview[key]; !last.IsZero() && now.Sub(last) < 6*time.Hour {
+			continue
+		}
+		already := false
+		for _, sample := range s.FunnelSamples {
+			if simKey(sample.Chain, sample.Address) == key {
+				already = true
+				break
+			}
+		}
+		if already {
+			continue
+		}
+		s.FunnelSamples = append(s.FunnelSamples, FunnelReviewSample{
+			ID: s.NextID, Chain: q.Chain, Address: q.Address, Symbol: q.Symbol, EntryPrice: q.Price, CurrentPrice: q.Price,
+			EntryLiquidity: q.Liquidity, CurrentLiquidity: q.Liquidity, Stage: q.Stage, OpenedAt: now, LastQuoteAt: q.Time,
+		})
+		s.NextID++
+		s.LastFunnelReview[key] = now
+		if len(s.FunnelSamples) >= 60 {
+			break
+		}
+	}
+	return events
+}
+
+func (s *SimState) FunnelReviewSummary() (active, closed, wins int, average float64) {
+	active = len(s.FunnelSamples)
+	closed = len(s.FunnelOutcomes)
+	if closed == 0 {
+		return
+	}
+	for _, outcome := range s.FunnelOutcomes {
+		average += outcome.PriceChangePct
+		if outcome.PriceChangePct > 0 {
 			wins++
 		}
 	}

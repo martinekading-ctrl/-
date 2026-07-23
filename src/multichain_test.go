@@ -132,3 +132,19 @@ func TestTopMultiDisplayOnlyShowsStrictCandidates(t *testing.T) {
 		t.Fatalf("radar must hide unqualified cache rows: %+v", rows)
 	}
 }
+
+func TestRiskSnapshotAlertsOnlyOnMaterialDeterioration(t *testing.T) {
+	old := Token{Chain: "base", Symbol: "TST", Liquidity: 100_000, LPLockKnown: true, LPLockPct: 0.90, CreatorPercent: 0.02, TopHolderPercent: 0.10, RiskCheckedAt: time.Now()}
+	next := old
+	next.Liquidity = 60_000
+	next.LPLockPct = 0.70
+	next.CreatorPercent = 0.09
+	next.TopHolderPercent = 0.25
+	alerts := riskSnapshotAlerts(old, next)
+	if len(alerts) != 4 {
+		t.Fatalf("expected four material risk alerts, got %v", alerts)
+	}
+	if len(strictRiskWarnings(Token{Chain: "base", Symbol: "TST"})) == 0 {
+		t.Fatal("an unverified LP lock must be made visible on a new strict candidate")
+	}
+}
