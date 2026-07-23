@@ -1,8 +1,8 @@
-# Multi-Chain Token Radar V2.21
+# Multi-Chain Token Radar V2.21.1
 
 > 上线、数据和安全边界请先阅读 [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)。本项目当前只做研究与本地模拟，不连接钱包或发送真实交易。
 
-V2.21 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
+V2.21.1 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
 Polygon, and Arbitrum. Its
 current workflow is:
 
@@ -16,6 +16,15 @@ current workflow is:
 The application does not connect to a wallet, store private keys, sign orders,
 or submit real transactions. A profitable paper result is not a promise of
 future or live-trading profit.
+
+## V2.21.1 paper-position audit display
+
+- The open paper-position table now displays the recorded buy time, simulated
+  entry price, live exact-pool price, remaining cost, unrealized PnL (amount
+  and percentage), and holding duration in one row.
+- If an exact-pool quote is interrupted, the UI explicitly shows that the
+  current price and unrealized PnL are awaiting a valid quote; it does not
+  present a stale mark as a live value.
 
 ## V2.21 free event-first discovery with durable reconciliation
 

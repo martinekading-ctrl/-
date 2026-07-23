@@ -1,6 +1,19 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestPositionOpenedAtText(t *testing.T) {
+	if got := positionOpenedAtText(time.Time{}); got != "—" {
+		t.Fatalf("zero open time = %q, want dash", got)
+	}
+	opened := time.Date(2026, time.July, 23, 9, 5, 0, 0, time.Local)
+	if got := positionOpenedAtText(opened); got != "07-23 09:05" {
+		t.Fatalf("open time = %q, want compact local time", got)
+	}
+}
 
 func TestExplorerTokenURLByChain(t *testing.T) {
 	tests := []struct {

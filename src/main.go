@@ -993,7 +993,7 @@ func drawCommonHeader(dc HDC, l layout, subtitle string) {
 }
 
 func drawSimUI(dc HDC, l layout) {
-	drawCommonHeader(dc, l, "V2.21 三链事件监听 · $1,000 策略验证 · 不连接钱包")
+	drawCommonHeader(dc, l, "V2.21.1 三链事件监听 · $1,000 策略验证 · 不连接钱包")
 	if app.sim == nil {
 		app.sim = NewSimState()
 	}
@@ -1097,8 +1097,11 @@ func drawSimPositions(dc HDC, l layout) {
 	text(dc, "当前模拟持仓", rect(r.Left+s(16), r.Top+s(10), s(260), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	text(dc, fmt.Sprintf("%d 个持仓", len(app.sim.Positions)), rect(r.Right-s(220), r.Top+s(12), s(200), s(28)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
 	fillRect(dc, l.simPosHeader, col.panel3)
-	headers := []string{"代币", "成本", "现价", "净收益率", "持仓时间"}
-	fr := []float64{0.28, 0.18, 0.18, 0.18, 0.18}
+	// Keep the paper position's entry evidence visible in the table.  The
+	// simulator has always persisted these values, but showing only the mark
+	// made it unnecessarily difficult to audit an open simulated trade.
+	headers := []string{"代币", "买入时间", "买入价", "现价", "剩余成本", "浮动盈亏", "持仓时长"}
+	fr := []float64{0.16, 0.16, 0.14, 0.14, 0.14, 0.14, 0.12}
 	x := l.simPosHeader.Left
 	for i, h := range headers {
 		cw := int32(float64(width(l.simPosHeader)) * fr[i])
@@ -1133,18 +1136,38 @@ func drawSimPositions(dc HDC, l layout) {
 		if p.RemainingCost > 0 {
 			ret = (net - p.RemainingCost) / p.RemainingCost * 100
 		}
+		unrealized := net - p.RemainingCost
 		name := "[" + chainLabel(p.Chain) + "] " + p.Symbol
 		if !p.QuoteInterruptedAt.IsZero() {
 			name += " · 报价中断"
 		}
-		vals := []string{name, fmt.Sprintf("%.2f", p.RemainingCost), price(priceV), fmt.Sprintf("%+.1f%%", ret), durationText(time.Since(p.OpenedAt))}
+		currentPrice := price(priceV)
+		pnlText := fmt.Sprintf("%+.2f (%+.1f%%)", unrealized, ret)
+		// A stale mark must never be presented as a current price or current PnL.
+		if !p.QuoteInterruptedAt.IsZero() {
+			currentPrice = "报价中断"
+			pnlText = "等待有效报价"
+		}
+		holding := "—"
+		if !p.OpenedAt.IsZero() {
+			holding = durationText(time.Since(p.OpenedAt))
+		}
+		vals := []string{
+			name,
+			positionOpenedAtText(p.OpenedAt),
+			price(p.EntryPrice),
+			currentPrice,
+			money(p.RemainingCost),
+			pnlText,
+			holding,
+		}
 		x = rr.Left
 		for j, v := range vals {
 			cw := int32(float64(width(rr)) * fr[j])
 			tc := col.text
-			if j == 3 && ret >= 0 {
+			if j == 5 && ret >= 0 && p.QuoteInterruptedAt.IsZero() {
 				tc = col.green
-			} else if j == 3 {
+			} else if j == 5 && p.QuoteInterruptedAt.IsZero() {
 				tc = col.red
 			}
 			if j == 0 && !p.QuoteInterruptedAt.IsZero() {
@@ -1265,6 +1288,15 @@ func durationText(d time.Duration) string {
 		return fmt.Sprintf("%.1f时", d.Hours())
 	}
 	return fmt.Sprintf("%.1f天", d.Hours()/24)
+}
+
+// positionOpenedAtText is deliberately compact enough for the paper-position
+// table while keeping the time at which the simulated fill was recorded.
+func positionOpenedAtText(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	return t.Local().Format("01-02 15:04")
 }
 
 func drawRadarUI(dc HDC, l layout) {
@@ -1881,7 +1913,7 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		loadPreferences()
 		app.monitor = loadMonitorState()
 		startFreeRealtimeDiscovery()
-		addLog("V2.21 已启动：三链免费事件监听、HTTP 区块回补、精确池保护和策略指纹已启用；不连接钱包")
+		addLog("V2.21.1 已启动：模拟持仓现已显示买入时间、买入价和现价；不连接钱包")
 		addLog("免费事件监听状态：" + currentRealtimeSummary().Text())
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
@@ -4942,7 +4974,7 @@ func main() {
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
 	className := utf16Ptr("MultiChainTokenRadarV221Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.21 · 三链事件监听与策略验证")
+	title := utf16Ptr("Multi-Chain Token Radar V2.21.1 · 模拟仓开仓信息与策略验证")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {
