@@ -1,6 +1,6 @@
-# Multi-Chain Token Radar V2.17
+# Multi-Chain Token Radar V2.18
 
-V2.17 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
+V2.18 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
 Polygon, and Arbitrum. Its
 current workflow is:
 
@@ -14,6 +14,19 @@ current workflow is:
 The application does not connect to a wallet, store private keys, sign orders,
 or submit real transactions. A profitable paper result is not a promise of
 future or live-trading profit.
+
+## V2.18 stable Simplified-Chinese market pages
+
+- **中文行情** now opens the exact pool on GeckoTerminal's Simplified Chinese
+  interface instead of depending on an OKLink token page. The new link was
+  checked against live BSC and Base pools and keeps the precise pool address,
+  price chart, liquidity, transactions, and age together.
+- The link is generated only when the scanner has an exact valid pool address.
+  When that evidence is unavailable, the application does not search by token
+  symbol or send the user to a possibly different token; it clearly asks the
+  user to use **原始走势** instead.
+- CSV exports use the same exact-pool Chinese-market URL. The original
+  DexScreener link and chain explorer remain separate reference links.
 
 ## V2.17 1,000-USDC validation account and staged exits
 

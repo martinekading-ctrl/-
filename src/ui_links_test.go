@@ -37,26 +37,32 @@ func TestSelectedDEXURLPrefersSpecificMarketLink(t *testing.T) {
 	}
 }
 
-func TestChineseTokenURLByChain(t *testing.T) {
+func TestChineseMarketURLByChain(t *testing.T) {
 	tests := []struct {
 		chain string
 		want  string
 	}{
-		{"base", "https://www.oklink.com/zh-hans/base/token/0xabc"},
-		{"ethereum", "https://www.oklink.com/zh-hans/eth/token/0xabc"},
-		{"eth", "https://www.oklink.com/zh-hans/eth/token/0xabc"},
-		{"bsc", "https://www.oklink.com/zh-hans/bsc/token/0xabc"},
-		{"optimism", "https://www.oklink.com/zh-hans/optimism/token/0xabc"},
-		{"op", "https://www.oklink.com/zh-hans/optimism/token/0xabc"},
-		{"polygon", "https://www.oklink.com/zh-hans/polygon/token/0xabc"},
-		{"matic", "https://www.oklink.com/zh-hans/polygon/token/0xabc"},
-		{"arbitrum", "https://www.oklink.com/zh-hans/arbitrum-one/token/0xabc"},
-		{"arb", "https://www.oklink.com/zh-hans/arbitrum-one/token/0xabc"},
+		{"base", "https://www.geckoterminal.com/zh/base/pools/0x1111111111111111111111111111111111111111"},
+		{"ethereum", "https://www.geckoterminal.com/zh/eth/pools/0x1111111111111111111111111111111111111111"},
+		{"eth", "https://www.geckoterminal.com/zh/eth/pools/0x1111111111111111111111111111111111111111"},
+		{"bsc", "https://www.geckoterminal.com/zh/bsc/pools/0x1111111111111111111111111111111111111111"},
+		{"optimism", "https://www.geckoterminal.com/zh/optimism/pools/0x1111111111111111111111111111111111111111"},
+		{"op", "https://www.geckoterminal.com/zh/optimism/pools/0x1111111111111111111111111111111111111111"},
+		{"polygon", "https://www.geckoterminal.com/zh/polygon_pos/pools/0x1111111111111111111111111111111111111111"},
+		{"matic", "https://www.geckoterminal.com/zh/polygon_pos/pools/0x1111111111111111111111111111111111111111"},
+		{"arbitrum", "https://www.geckoterminal.com/zh/arbitrum/pools/0x1111111111111111111111111111111111111111"},
+		{"arb", "https://www.geckoterminal.com/zh/arbitrum/pools/0x1111111111111111111111111111111111111111"},
 	}
 	for _, tt := range tests {
-		if got := chineseTokenURL(tt.chain, "0xabc"); got != tt.want {
+		if got := chineseMarketURL(Token{Chain: tt.chain, PoolAddress: "0x1111111111111111111111111111111111111111"}); got != tt.want {
 			t.Fatalf("chain %s: got %q want %q", tt.chain, got, tt.want)
 		}
+	}
+}
+
+func TestChineseMarketURLRejectsMissingExactPool(t *testing.T) {
+	if got := chineseMarketURL(Token{Chain: "bsc", Address: "0x1111111111111111111111111111111111111111"}); got != "" {
+		t.Fatalf("missing exact pool should not create a potentially wrong market link: %q", got)
 	}
 }
 

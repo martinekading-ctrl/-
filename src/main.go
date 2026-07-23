@@ -985,7 +985,7 @@ func drawCommonHeader(dc HDC, l layout, subtitle string) {
 }
 
 func drawSimUI(dc HDC, l layout) {
-	drawCommonHeader(dc, l, "V2.17 $1,000 策略验证与三段止盈 · 不连接钱包")
+	drawCommonHeader(dc, l, "V2.18 稳定中文行情入口 · $1,000 策略验证 · 不连接钱包")
 	if app.sim == nil {
 		app.sim = NewSimState()
 	}
@@ -1497,7 +1497,7 @@ func drawRows(dc HDC, l layout) {
 		chartR, chainR := radarRowLinkRects(l, row)
 		text(dc, footnote, rect(rr.Left+s(12), rr.Top+s(42), width(rr)-s(250), s(22)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 		text(dc, "原始走势 ↗", chartR, fnts.small, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-		text(dc, "中文资料 ↗", chainR, fnts.small, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+		text(dc, "中文行情 ↗", chainR, fnts.small, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 		y += rowH
 	}
 }
@@ -1575,7 +1575,7 @@ func drawDetails(dc HDC, r RECT) {
 		y := body.Top + s(8)
 		text(dc, fmt.Sprintf("[%s] %s  %s", chainLabel(t.Chain), t.Symbol, t.Name), rect(body.Left+s(8), y, width(body)-s(16), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 		y += s(36)
-		drawButton(dc, idDetailChinese, buildLayout().buttons[idDetailChinese], "中文资料 ↗", true, true)
+		drawButton(dc, idDetailChinese, buildLayout().buttons[idDetailChinese], "中文行情 ↗", true, true)
 		drawButton(dc, idDetailChart, buildLayout().buttons[idDetailChart], "原始走势 ↗", true, false)
 		y += s(42)
 
@@ -1763,7 +1763,7 @@ func drawExpandedDetails(dc HDC, l layout) {
 	}
 	t := app.results[app.selected]
 	text(dc, fmt.Sprintf("[%s] %s · 完整详情", chainLabel(t.Chain), t.Symbol), rect(l.modal.Left+s(30), l.modal.Top+s(20), width(l.modal)-s(490), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	drawButton(dc, idModalChinese, l.buttons[idModalChinese], "中文资料 ↗", true, true)
+	drawButton(dc, idModalChinese, l.buttons[idModalChinese], "中文行情 ↗", true, true)
 	drawButton(dc, idModalChart, l.buttons[idModalChart], "原始走势 ↗", true, false)
 	drawButton(dc, idModalChain, l.buttons[idModalChain], "区块浏览器 ↗", true, false)
 	line(dc, l.modal.Left+s(24), l.modal.Top+s(70), l.modal.Right-s(24), l.modal.Top+s(70), col.border)
@@ -1773,10 +1773,13 @@ func drawExpandedDetails(dc HDC, l layout) {
 	withClip(dc, body, func() {
 		text(dc, t.Name+"  "+t.Symbol, rect(body.Left, y, width(body)-s(20), s(38)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 		y += s(42)
-		chineseURL := chineseTokenURL(t.Chain, t.Address)
+		chineseURL := chineseMarketURL(t)
 		chartURL := selectedDEXURL(t)
 		chainURL := explorerTokenURL(t.Chain, t.Address)
-		text(dc, "中文资料（OKLink）："+chineseURL, rect(body.Left, y, width(body)-s(30), s(42)), fnts.small, col.cyan, DT_LEFT|DT_WORDBREAK|DT_NOPREFIX)
+		if chineseURL == "" {
+			chineseURL = "当前候选尚无可核对的精确交易池；请先使用原始走势，避免跳转到错误代币。"
+		}
+		text(dc, "中文行情（GeckoTerminal 简体中文·精确交易池）："+chineseURL, rect(body.Left, y, width(body)-s(30), s(42)), fnts.small, col.cyan, DT_LEFT|DT_WORDBREAK|DT_NOPREFIX)
 		y += s(46)
 		text(dc, "原始走势图（新币精确交易池）："+chartURL, rect(body.Left, y, width(body)-s(30), s(42)), fnts.small, col.cyan, DT_LEFT|DT_WORDBREAK|DT_NOPREFIX)
 		y += s(52)
@@ -1848,7 +1851,7 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		loadSimState()
 		loadPreferences()
 		app.monitor = loadMonitorState()
-		addLog("V2.17 已启动：$1,000 验证账户与三段止盈已启用；审查项不可模拟买入，不连接钱包")
+		addLog("V2.18 已启动：中文行情使用精确交易池简体中文入口；审查项不可模拟买入，不连接钱包")
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
 		return 0
@@ -4560,7 +4563,7 @@ func addLog(s string) {
 	if len(app.logs) > 100 {
 		app.logs = app.logs[len(app.logs)-100:]
 	}
-	logPath := filepath.Join(dataDir(), "runtime_v217.log")
+	logPath := filepath.Join(dataDir(), "runtime_v218.log")
 	rotateRuntimeLog(logPath)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
@@ -4726,9 +4729,9 @@ func exportCSV() {
 	defer f.Close()
 	_, _ = f.Write([]byte{0xEF, 0xBB, 0xBF})
 	w := csv.NewWriter(f)
-	_ = w.Write([]string{"链", "质量分", "等级", "代币", "名称", "合约", "中文资料链接", "原始走势图链接", "区块浏览器链接", "价格", "流动性", "24H成交", "池龄小时", "24H涨跌", "买入税%", "卖出税%", "税费已确认", "安全", "来源"})
+	_ = w.Write([]string{"链", "质量分", "等级", "代币", "名称", "合约", "中文行情链接", "原始走势图链接", "区块浏览器链接", "价格", "流动性", "24H成交", "池龄小时", "24H涨跌", "买入税%", "卖出税%", "税费已确认", "安全", "来源"})
 	for _, t := range app.results {
-		_ = w.Write([]string{chainLabel(t.Chain), strconv.Itoa(t.Score), t.Grade, t.Symbol, t.Name, t.Address, chineseTokenURL(t.Chain, t.Address), selectedDEXURL(t), explorerTokenURL(t.Chain, t.Address), strconv.FormatFloat(t.Price, 'f', 8, 64), strconv.FormatFloat(t.Liquidity, 'f', 2, 64), strconv.FormatFloat(t.Volume24, 'f', 2, 64), strconv.FormatFloat(t.AgeHours, 'f', 1, 64), strconv.FormatFloat(t.Change24, 'f', 2, 64), strconv.FormatFloat(t.BuyTaxPct, 'f', 2, 64), strconv.FormatFloat(t.SellTaxPct, 'f', 2, 64), strconv.FormatBool(t.TaxKnown), t.Security, t.Source})
+		_ = w.Write([]string{chainLabel(t.Chain), strconv.Itoa(t.Score), t.Grade, t.Symbol, t.Name, t.Address, chineseMarketURL(t), selectedDEXURL(t), explorerTokenURL(t.Chain, t.Address), strconv.FormatFloat(t.Price, 'f', 8, 64), strconv.FormatFloat(t.Liquidity, 'f', 2, 64), strconv.FormatFloat(t.Volume24, 'f', 2, 64), strconv.FormatFloat(t.AgeHours, 'f', 1, 64), strconv.FormatFloat(t.Change24, 'f', 2, 64), strconv.FormatFloat(t.BuyTaxPct, 'f', 2, 64), strconv.FormatFloat(t.SellTaxPct, 'f', 2, 64), strconv.FormatBool(t.TaxKnown), t.Security, t.Source})
 	}
 	w.Flush()
 	app.toast = "CSV 已导出到桌面"
@@ -4752,23 +4755,29 @@ func selectedDEXURL(t Token) string {
 	return u
 }
 
-// chineseTokenURL opens the same token contract in OKLink's Simplified Chinese UI.
-// Unlike a symbol search, an address route remains exact even for a just-created token.
-func chineseTokenURL(chain, address string) string {
-	chainPath := "base"
-	switch normalizeChain(chain) {
-	case "ethereum":
-		chainPath = "eth"
-	case "bsc":
-		chainPath = "bsc"
-	case "optimism":
-		chainPath = "optimism"
-	case "polygon":
-		chainPath = "polygon"
-	case "arbitrum":
-		chainPath = "arbitrum-one"
+// chineseMarketURL deliberately links an exact pool instead of a token-symbol
+// search. GeckoTerminal's /zh pages have a reliable Simplified Chinese UI and
+// retain the pool address, which prevents an old or similarly named token from
+// being substituted for a newly discovered market.
+func chineseMarketURL(t Token) string {
+	pool := strings.TrimSpace(t.PoolAddress)
+	if !validAddress(pool) {
+		return ""
 	}
-	return "https://www.oklink.com/zh-hans/" + chainPath + "/token/" + url.PathEscape(strings.TrimSpace(address))
+	network := "base"
+	switch normalizeChain(t.Chain) {
+	case "ethereum":
+		network = "eth"
+	case "bsc":
+		network = "bsc"
+	case "optimism":
+		network = "optimism"
+	case "polygon":
+		network = "polygon_pos"
+	case "arbitrum":
+		network = "arbitrum"
+	}
+	return "https://www.geckoterminal.com/zh/" + network + "/pools/" + url.PathEscape(strings.ToLower(pool))
 }
 
 func explorerTokenURL(chain, address string) string {
@@ -4801,7 +4810,12 @@ func openSelectedChinese() {
 		return
 	}
 	t := app.results[app.selected]
-	u := chineseTokenURL(t.Chain, t.Address)
+	u := chineseMarketURL(t)
+	if u == "" {
+		addLog("中文行情未打开：该候选尚无可核对的精确交易池地址；请使用原始走势")
+		invalidate(false)
+		return
+	}
 	pShellExecuteW.Call(0, uintptr(unsafe.Pointer(utf16Ptr("open"))), uintptr(unsafe.Pointer(utf16Ptr(u))), 0, 0, SW_SHOWNORMAL)
 }
 
@@ -4813,8 +4827,8 @@ func main() {
 	// Per-monitor v2 DPI awareness. -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
-	className := utf16Ptr("MultiChainTokenRadarV217Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.17 · $1,000 验证账户与三段止盈")
+	className := utf16Ptr("MultiChainTokenRadarV218Window")
+	title := utf16Ptr("Multi-Chain Token Radar V2.18 · 稳定中文行情与策略验证")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {
