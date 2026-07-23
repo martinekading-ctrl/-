@@ -141,9 +141,10 @@ func (s *SimState) dynamicPositionSize(q SimQuote) float64 {
 		// Exploration is for collecting paper evidence, not for scaling a bet.
 		amount = math.Min(amount, 1)
 	}
-	// At most two basis points of observed pool liquidity. This keeps the paper
-	// fill from pretending a thin pool can absorb the same size as a deep pool.
-	if liquidityCap := q.Liquidity * 0.0002; liquidityCap > 0 {
+	// At most twenty basis points of observed pool liquidity. This is still a
+	// deliberately small paper fill, while allowing the 20-USDC validation
+	// position when a strict candidate has the 10,000-USDC minimum liquidity.
+	if liquidityCap := q.Liquidity * 0.002; liquidityCap > 0 {
 		amount = math.Min(amount, liquidityCap)
 	}
 	streak := s.Validation().ConsecutiveLosses

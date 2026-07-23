@@ -17,7 +17,7 @@ func TestBuyAndManualSellIncludeCosts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !(p.Quantity < 5 && s.Cash == 95) {
+	if !(p.Quantity < 5 && s.Cash == 995) {
 		t.Fatalf("unexpected buy qty=%v cash=%v", p.Quantity, s.Cash)
 	}
 	tr, err := s.Sell(p.ID, 1, q, "manual", now.Add(time.Minute))
@@ -60,23 +60,59 @@ func TestStopLossClosesPosition(t *testing.T) {
 	}
 }
 
-func TestTakeProfitPartialThenFinal(t *testing.T) {
+func TestThreeStageTakeProfitAndRunner(t *testing.T) {
 	s := NewSimState()
 	s.Config.BaseSlippagePct = 0.01
 	s.Config.DexFeePct = 0.01
 	s.Config.GasUSDC = 0.0001
+	s.Config.StopLossPct = 50
+	s.Config.TakeProfit1Pct = 10
+	s.Config.TakeProfit2Pct = 20
+	s.Config.TakeProfit3Pct = 30
+	s.Config.TrailingStopPct = 90
+	s.Config.TrailActivationPct = 95
+	s.Config.MaxHoldingHours = 24
 	now := time.Now()
 	p, err := s.Buy(testQuote(1), 5, "manual", now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Update([]SimQuote{testQuote(1.16)}, now.Add(time.Minute))
-	if len(s.Positions) != 1 || !s.Positions[0].TP1Done || !(s.Positions[0].Quantity < p.Quantity) {
+	if len(s.Positions) != 1 || !s.Positions[0].TP1Done || s.Positions[0].TP2Done || !(s.Positions[0].Quantity < p.Quantity) {
 		t.Fatalf("tp1 failed: %+v", s.Positions)
 	}
 	s.Update([]SimQuote{testQuote(1.30)}, now.Add(2*time.Minute))
-	if len(s.Positions) != 0 || len(s.Trades) != 2 {
-		t.Fatalf("tp2 failed: positions=%d trades=%d", len(s.Positions), len(s.Trades))
+	if len(s.Positions) != 1 || !s.Positions[0].TP2Done || len(s.Trades) != 2 {
+		t.Fatalf("tp2 failed: positions=%d trades=%+v", len(s.Positions), s.Trades)
+	}
+	if got := s.Positions[0].Quantity / p.InitialQuantity; got < 0.29 || got > 0.31 {
+		t.Fatalf("runner quantity = %.3f, want 30%%", got)
+	}
+	s.Update([]SimQuote{testQuote(1.50)}, now.Add(3*time.Minute))
+	if len(s.Positions) != 0 || len(s.Trades) != 3 {
+		t.Fatalf("tp3 failed: positions=%d trades=%d", len(s.Positions), len(s.Trades))
+	}
+}
+
+func TestValidationAccountDefaults(t *testing.T) {
+	s := NewSimState()
+	if s.AutoProfile != AutoProfileValidation || s.Config.InitialCash != 1000 || s.Config.PositionSize != 20 || s.Config.DailyLossLimit != 30 {
+		t.Fatalf("unexpected validation defaults: profile=%d config=%+v", s.AutoProfile, s.Config)
+	}
+	if s.Config.StopLossPct != 12 || s.Config.TakeProfit1Pct != 30 || s.Config.TakeProfit2Pct != 60 || s.Config.TakeProfit3Pct != 100 || s.Config.TrailingStopPct != 18 {
+		t.Fatalf("unexpected validation exits: %+v", s.Config)
+	}
+}
+
+func TestResetCreatesFreshValidationAccount(t *testing.T) {
+	s := NewSimState()
+	s.Cash = 17
+	s.Positions = []SimPosition{{ID: 1}}
+	s.Trades = []SimTrade{{ID: 2}}
+	s.Snapshots["base|old"] = []PriceSnapshot{{Time: time.Now(), Price: 1}}
+	s.Reset()
+	if s.Cash != 1000 || s.AutoProfile != AutoProfileValidation || len(s.Positions) != 0 || len(s.Trades) != 0 || len(s.Snapshots) != 0 {
+		t.Fatalf("reset did not create a fresh validation account: %+v", s)
 	}
 }
 
@@ -84,7 +120,7 @@ func TestDailyLossLimitBlocksAutoEntry(t *testing.T) {
 	s := NewSimState()
 	s.AutoEnabled = true
 	now := time.Now()
-	s.Trades = append(s.Trades, SimTrade{PnL: -6, ClosedAt: now})
+	s.Trades = append(s.Trades, SimTrade{PnL: -31, ClosedAt: now})
 	events := s.AutoEvaluate([]SimQuote{testQuote(1)}, now)
 	if len(events) == 0 || len(s.Positions) != 0 {
 		t.Fatal("daily loss limit not enforced")
@@ -222,7 +258,7 @@ func TestV28MigrationEnablesOnlyPaperAutomation(t *testing.T) {
 	if s.Version != 4 || !s.AutoEnabled || s.AutoProfile != AutoProfileExplore {
 		t.Fatalf("expected current paper-only migration: version=%d auto=%v profile=%d", s.Version, s.AutoEnabled, s.AutoProfile)
 	}
-	if s.Config.MaxHoldingHours != 6 || s.Config.LiquidityDropPct != 25 {
+	if s.Config.MaxHoldingHours != 2 || s.Config.LiquidityDropPct != 25 {
 		t.Fatalf("expected V2.8 risk defaults: %+v", s.Config)
 	}
 }

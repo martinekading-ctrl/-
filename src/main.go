@@ -985,7 +985,7 @@ func drawCommonHeader(dc HDC, l layout, subtitle string) {
 }
 
 func drawSimUI(dc HDC, l layout) {
-	drawCommonHeader(dc, l, "V2.16 严格信号与只读审查队列 · 不连接钱包")
+	drawCommonHeader(dc, l, "V2.17 $1,000 策略验证与三段止盈 · 不连接钱包")
 	if app.sim == nil {
 		app.sim = NewSimState()
 	}
@@ -1202,6 +1202,9 @@ func drawSimDetail(dc HDC, r RECT, m SimMetrics) {
 	if app.sim.AutoProfile == AutoProfileExplore {
 		securityLine = "• 探索档只用 ≤1 USDC 纸面仓位；严重风险、零分和已知高税费仍硬性禁止"
 	}
+	if app.sim.AutoProfile == AutoProfileValidation {
+		securityLine = "• 仅严格首发资格可开仓：安全已验证、税费已确认且≤5%"
+	}
 	patternLine := "• 需要回调后重新走强，避免贴近短线高点"
 	if !rules.RequirePullback {
 		patternLine = "• 测试档只要求基础上涨趋势，目的是尽快验证模拟系统"
@@ -1209,11 +1212,14 @@ func drawSimDetail(dc HDC, r RECT, m SimMetrics) {
 	if app.sim.AutoProfile == AutoProfileExplore {
 		patternLine = "• 探索档观察 30 秒；只要基础价格不走弱即可记录小额纸面样本"
 	}
+	if app.sim.AutoProfile == AutoProfileValidation {
+		patternLine = "• 验证档观察约 30 秒；严格新池仍需价格稳定、流动性不下降、不可追高"
+	}
 	flowLine := fmt.Sprintf("• 已知买卖税≤%.0f%%，买卖笔数比≥%.2f", rules.MaxTaxPct, rules.MinBuySellRatio)
 	if rules.MinBuySellRatio == 0 {
 		flowLine = fmt.Sprintf("• 已知买卖税≤%.0f%%；不以买卖笔数为硬门槛", rules.MaxTaxPct)
 	}
-	lines := []string{fmt.Sprintf("正式验证：%s · 严格完整交易 %d/%d", v.Status, v.ClosedPositions, v.RequiredPositions), fmt.Sprintf("严格策略净收益：%+.2f · PF %s · 期望/笔 %+.3f", v.NetPnL, v.ProfitFactorText(), v.Expectancy), fmt.Sprintf("本轮评估：候选 %d · 合格 %d · 探索开仓 %d · 新影子 %d", diag.Evaluated, diag.Eligible, diag.Opened, diag.ShadowStarted), "拦截原因：" + diag.TopReasons(3), fmt.Sprintf("探索样本：进行 %d · 已闭合 %d · 净盈亏 %+.2f（不计正式验证）", exploreOpen, exploreClosed, explorePnL), fmt.Sprintf("影子样本：进行 %d · 已闭合 %d · 胜 %d · 平均变动 %+.1f%%", shadowOpen, shadowClosed, shadowWins, shadowAvg), fmt.Sprintf("淘汰复盘：进行 %d · 已闭合 %d · 反向上涨 %d · 平均变动 %+.1f%%（不影响策略验证）", funnelOpen, funnelClosed, funnelWins, funnelAvg), "", fmt.Sprintf("当前自动策略：%s档 · 动态仓位≤%.2f USDC", app.sim.ProfileName(), positionCap), fmt.Sprintf("• 评分≥%d，流动性≥%s，观察≥%.1f分钟，池龄≤%.0f小时", rules.MinScore, money(rules.MinLiquidity), rules.ObserveMinutes, rules.MaxAgeHours), securityLine, flowLine, patternLine, "• 同链只开一个仓位；流动性不稳或短时暴涨仍拒绝追入", "", "成本已计入 DEX 费、Gas、税费和流动性滑点；探索、影子与淘汰复盘都不能当作盈利证明。"}
+	lines := []string{fmt.Sprintf("正式验证：%s · 严格完整交易 %d/%d", v.Status, v.ClosedPositions, v.RequiredPositions), fmt.Sprintf("严格策略净收益：%+.2f · PF %s · 期望/笔 %+.3f", v.NetPnL, v.ProfitFactorText(), v.Expectancy), fmt.Sprintf("本轮评估：候选 %d · 合格 %d · 自动开仓 %d · 新影子 %d", diag.Evaluated, diag.Eligible, diag.Opened, diag.ShadowStarted), "拦截原因：" + diag.TopReasons(3), fmt.Sprintf("探索样本：进行 %d · 已闭合 %d · 净盈亏 %+.2f（不计正式验证）", exploreOpen, exploreClosed, explorePnL), fmt.Sprintf("影子样本：进行 %d · 已闭合 %d · 胜 %d · 平均变动 %+.1f%%", shadowOpen, shadowClosed, shadowWins, shadowAvg), fmt.Sprintf("淘汰复盘：进行 %d · 已闭合 %d · 反向上涨 %d · 平均变动 %+.1f%%（不影响策略验证）", funnelOpen, funnelClosed, funnelWins, funnelAvg), "", fmt.Sprintf("验证账户：%.0f USDC · 单笔≤%.2f · 最多 %d 仓 · 日亏损熔断 %.0f", app.sim.Config.InitialCash, positionCap, app.sim.Config.MaxPositions, app.sim.Config.DailyLossLimit), fmt.Sprintf("退出计划：净亏损 %.0f%% 平仓；+%.0f%% / +%.0f%% 各卖 35%%；余仓目标 +%.0f%% 或高点回撤 %.0f%%", app.sim.Config.StopLossPct, app.sim.Config.TakeProfit1Pct, app.sim.Config.TakeProfit2Pct, app.sim.Config.TakeProfit3Pct, app.sim.Config.TrailingStopPct), fmt.Sprintf("• 评分≥%d，流动性≥%s，观察≥%.1f分钟，池龄≤%.0f小时", rules.MinScore, money(rules.MinLiquidity), rules.ObserveMinutes, rules.MaxAgeHours), securityLine, flowLine, patternLine, "• 同链只开一个仓位；流动性不稳或短时暴涨仍拒绝追入", "", "成本已计入 DEX 费、Gas、税费和流动性滑点；纸面验证不代表实盘盈利。"}
 	for _, ln := range lines {
 		h := s(25)
 		if ln == "" {
@@ -1705,15 +1711,15 @@ func drawModal(dc HDC, l layout) {
 			"2. 每个候选最右侧都有‘原始走势’和‘中文资料’链接；详情页优先打开简体中文代币资料，展开后仍可打开原始走势和区块浏览器。\n" +
 			"3. 切换到‘模拟盘’，查看持仓、净盈亏、止损止盈和交易记录。\n" +
 			"4. 在候选列表内滚动可逐行浏览代币；在右侧或空白处滚动可下拉整个页面；点击‘展开’查看完整详情。\n" +
-			"5. 点击‘策略档位’可切换：保守、标准、测试、探索；V2.11 默认探索档，用 ≤1 USDC 生成纸面样本。\n\n" +
+			"5. 点击‘策略档位’可切换：保守、标准、测试、探索、验证；默认验证档使用严格新池资格生成独立纸面样本。\n\n" +
 			"四种策略档位\n" +
-			"保守：80分、5万美元流动性、观察3分钟；标准：70分、2.5万美元、观察2分钟；测试：55分、1万美元、观察1分钟；探索：15分、5千美元、观察约30秒、每笔最多1 USDC。探索与影子样本只用于研究，不代表更安全或更赚钱。严重合约风险在任何档位都禁止开仓。\n\n" +
+			"保守：80分、5万美元流动性、观察3分钟；标准：70分、2.5万美元、观察2分钟；测试：55分、1万美元、观察1分钟；探索：15分、5千美元、观察约30秒、每笔最多1 USDC；验证：严格新池资格、1万美元、观察约30秒、每笔最多20 USDC。探索与影子样本只用于研究，不代表更安全或更赚钱。严重合约风险在任何档位都禁止开仓。\n\n" +
 			"评分与模拟的区别\n" +
 			"质量分只是研究优先级，不是买入信号。模拟盘会估算 DEX 手续费、按链区分的 Gas、税费和滑点，但无法完全复现实盘的 MEV、报价延迟和无法卖出。ETH 的成本按较高下限保守估算，1 USDC 探索样本成本不足时只进入影子研究。\n\n" +
 			"退出规则\n" +
-			"初始 100 USDC，动态仓位最高 5 USDC，最多 3 个持仓；亏损 8% 止损，盈利 12% 卖一半，盈利 20% 清仓，从最高点回撤 8% 退出。连续亏损 3 笔暂停 3 小时。\n\n" +
+			"验证账户初始 1,000 USDC，动态仓位最高 20 USDC，最多 3 个持仓；净亏损 12% 止损，盈利 30% 与 60% 各卖原始仓位 35%，最后 30% 目标 100% 或从最高点回撤 18% 退出。连续亏损 3 笔暂停 3 小时。\n\n" +
 			"盈利验证\n" +
-			"只按完整自动持仓统计。至少 30 笔、扣除成本后净收益为正、利润因子不低于 1.20、最大回撤不高于 12%，才显示纸面验证通过。\n\n" +
+			"只按完整自动持仓统计。至少 100 笔、扣除成本后净收益为正、利润因子不低于 1.30、最大回撤不高于 15%，才显示纸面验证通过。\n\n" +
 			"注意\n" +
 			"程序不连接钱包、不读取助记词、不发送真实交易。模拟盈利不代表实盘可以盈利。"
 		text(dc, body, rect(r.Left+s(34), r.Top+s(88), width(r)-s(68), height(r)-s(178)), fnts.body, col.muted, DT_LEFT|DT_WORDBREAK)
@@ -1842,7 +1848,7 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		loadSimState()
 		loadPreferences()
 		app.monitor = loadMonitorState()
-		addLog("V2.16 已启动：严格信号与只读审查队列已启用；审查项不可模拟买入，不连接钱包")
+		addLog("V2.17 已启动：$1,000 验证账户与三段止盈已启用；审查项不可模拟买入，不连接钱包")
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
 		return 0
@@ -2270,8 +2276,8 @@ func handleClick(id int) {
 			app.selectedTrade = -1
 			saveSimState()
 			app.resetConfirmUntil = time.Time{}
-			app.toast = "模拟账户已重置为 100 USDC"
-			addLog("模拟账户已由用户重置")
+			app.toast = "模拟账户已重置为 $1,000 验证账户"
+			addLog("模拟账户已由用户重置：$1,000 验证账户与三段止盈已启用")
 		} else {
 			app.resetConfirmUntil = time.Now().Add(5 * time.Second)
 			app.toast = "5秒内再次点击“重置模拟盘”确认清空"
@@ -4398,7 +4404,14 @@ func loadSimState() {
 	var st SimState
 	if json.Unmarshal(b, &st) != nil {
 		app.sim = NewSimState()
-		addLog("模拟账户文件损坏，已创建新的 100 USDC 模拟账户")
+		addLog("模拟账户文件损坏，已创建新的 $1,000 验证账户")
+		return
+	}
+	if os.Getenv("MCTR_RESET_VALIDATION") == "1" {
+		st.Reset()
+		app.sim = &st
+		saveSimState()
+		addLog("已按确认清空旧模拟记录：新的 $1,000 验证账户已建立")
 		return
 	}
 	st.Normalize()
@@ -4547,7 +4560,7 @@ func addLog(s string) {
 	if len(app.logs) > 100 {
 		app.logs = app.logs[len(app.logs)-100:]
 	}
-	logPath := filepath.Join(dataDir(), "runtime_v216.log")
+	logPath := filepath.Join(dataDir(), "runtime_v217.log")
 	rotateRuntimeLog(logPath)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
@@ -4800,8 +4813,8 @@ func main() {
 	// Per-monitor v2 DPI awareness. -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
-	className := utf16Ptr("MultiChainTokenRadarV216Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.16 · 严格信号与只读审查队列")
+	className := utf16Ptr("MultiChainTokenRadarV217Window")
+	title := utf16Ptr("Multi-Chain Token Radar V2.17 · $1,000 验证账户与三段止盈")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// SimConfig contains deliberately conservative defaults for a small paper account.
+// SimConfig contains the local-only paper-account and exit-plan settings.
 // All percentages use human units (for example 8 means 8%).
 type SimConfig struct {
 	InitialCash           float64 `json:"initial_cash"`
@@ -19,7 +19,9 @@ type SimConfig struct {
 	StopLossPct           float64 `json:"stop_loss_pct"`
 	TakeProfit1Pct        float64 `json:"take_profit1_pct"`
 	TakeProfit2Pct        float64 `json:"take_profit2_pct"`
+	TakeProfit3Pct        float64 `json:"take_profit3_pct"`
 	TrailingStopPct       float64 `json:"trailing_stop_pct"`
+	TrailActivationPct    float64 `json:"trail_activation_pct"`
 	LiquidityDropPct      float64 `json:"liquidity_drop_pct"`
 	MaxHoldingHours       float64 `json:"max_holding_hours"`
 	DexFeePct             float64 `json:"dex_fee_pct"`
@@ -40,14 +42,14 @@ type SimConfig struct {
 
 func DefaultSimConfig() SimConfig {
 	return SimConfig{
-		InitialCash: 100, PositionSize: 5, MaxPositions: 3, DailyLossLimit: 5,
-		StopLossPct: 8, TakeProfit1Pct: 12, TakeProfit2Pct: 20,
-		TrailingStopPct: 8, LiquidityDropPct: 25, MaxHoldingHours: 6,
+		InitialCash: 1000, PositionSize: 20, MaxPositions: 3, DailyLossLimit: 30,
+		StopLossPct: 12, TakeProfit1Pct: 30, TakeProfit2Pct: 60, TakeProfit3Pct: 100,
+		TrailingStopPct: 18, TrailActivationPct: 30, LiquidityDropPct: 25, MaxHoldingHours: 2,
 		DexFeePct: 0.30, GasUSDC: 0.01, BaseSlippagePct: 0.80, MaxSlippagePct: 12,
 		MinScore: 80, MinLiquidity: 50_000, MaxTaxPct: 5,
 		ObserveMinutes: 3, AutoCooldownMinutes: 30,
 		MaxConsecutiveLosses: 3, LossCooldownMinutes: 180,
-		MinValidationTrades: 30, MinProfitFactor: 1.20, MaxValidationDrawdown: 12,
+		MinValidationTrades: 100, MinProfitFactor: 1.30, MaxValidationDrawdown: 15,
 	}
 }
 
@@ -101,6 +103,7 @@ type SimPosition struct {
 	LastQuoteAt      time.Time `json:"last_quote_at"`
 	OpenedAt         time.Time `json:"opened_at"`
 	TP1Done          bool      `json:"tp1_done"`
+	TP2Done          bool      `json:"tp2_done"`
 	Automated        bool      `json:"automated"`
 	Exploratory      bool      `json:"exploratory"`
 	EntryReason      string    `json:"entry_reason"`
@@ -254,7 +257,7 @@ func NewSimState() *SimState {
 	return &SimState{
 		Version: 4, Config: cfg, Cash: cfg.InitialCash, Snapshots: map[string][]PriceSnapshot{},
 		AutoEnabled: true, NextID: 1, EquityPeak: cfg.InitialCash,
-		LastAutoEntry: map[string]time.Time{}, LastShadow: map[string]time.Time{}, LastFunnelReview: map[string]time.Time{}, AutoProfile: AutoProfileExplore,
+		LastAutoEntry: map[string]time.Time{}, LastShadow: map[string]time.Time{}, LastFunnelReview: map[string]time.Time{}, AutoProfile: AutoProfileValidation,
 	}
 }
 
@@ -285,8 +288,14 @@ func (s *SimState) Normalize() {
 	if s.Config.TakeProfit2Pct <= 0 {
 		s.Config.TakeProfit2Pct = d.TakeProfit2Pct
 	}
+	if s.Config.TakeProfit3Pct <= 0 {
+		s.Config.TakeProfit3Pct = d.TakeProfit3Pct
+	}
 	if s.Config.TrailingStopPct <= 0 {
 		s.Config.TrailingStopPct = d.TrailingStopPct
+	}
+	if s.Config.TrailActivationPct <= 0 {
+		s.Config.TrailActivationPct = d.TrailActivationPct
 	}
 	if s.Config.LiquidityDropPct <= 0 {
 		s.Config.LiquidityDropPct = d.LiquidityDropPct
@@ -351,7 +360,7 @@ func (s *SimState) Normalize() {
 	if s.LastEntryStats.Rejections == nil {
 		s.LastEntryStats.Rejections = map[string]int{}
 	}
-	if s.AutoProfile < AutoProfileConservative || s.AutoProfile > AutoProfileExplore {
+	if s.AutoProfile < AutoProfileConservative || s.AutoProfile > AutoProfileValidation {
 		s.AutoProfile = AutoProfileStandard
 	}
 	for i := range s.Positions {
@@ -425,6 +434,7 @@ const (
 	AutoProfileStandard
 	AutoProfileTest
 	AutoProfileExplore
+	AutoProfileValidation
 )
 
 func (s *SimState) ProfileName() string {
@@ -436,6 +446,8 @@ func (s *SimState) ProfileName() string {
 		return "测试"
 	case AutoProfileExplore:
 		return "探索"
+	case AutoProfileValidation:
+		return "验证"
 	default:
 		return "标准"
 	}
@@ -443,7 +455,7 @@ func (s *SimState) ProfileName() string {
 
 func (s *SimState) CycleProfile() string {
 	s.Normalize()
-	s.AutoProfile = (s.AutoProfile + 1) % 4
+	s.AutoProfile = (s.AutoProfile + 1) % 5
 	return s.ProfileName()
 }
 
@@ -475,6 +487,11 @@ func (s *SimState) rules() autoRules {
 		// useful paper samples from public-data candidates without pretending to
 		// be a production entry rule.
 		return autoRules{15, 5000, 20, 0.5, 0, 30, 2, false, false, false, 0, 48, 25}
+	case AutoProfileValidation:
+		// The validation profile still requires the upstream strict market-first
+		// qualification. It only shortens market confirmation enough to gather
+		// an auditable paper sample without treating review rows as tradeable.
+		return autoRules{15, 10_000, 5, 0.5, 0, 30, 2, true, true, false, 1.0, 1, 25}
 	default:
 		return autoRules{70, 25000, 8, 2, 0.5, 15, 6, true, true, true, 1.15, 12, 12}
 	}
@@ -639,13 +656,13 @@ func (s *SimState) liquidationValue(p SimPosition, price, liquidity float64) (ne
 	return net, fees
 }
 
-func (s *SimState) exitRules(p SimPosition) (stopLoss, take1, take2, trailing, maxHours, trailActivation float64) {
-	stopLoss, take1, take2 = s.Config.StopLossPct, s.Config.TakeProfit1Pct, s.Config.TakeProfit2Pct
-	trailing, maxHours, trailActivation = s.Config.TrailingStopPct, s.Config.MaxHoldingHours, 8
+func (s *SimState) exitRules(p SimPosition) (stopLoss, take1, take2, take3, trailing, maxHours, trailActivation float64) {
+	stopLoss, take1, take2, take3 = s.Config.StopLossPct, s.Config.TakeProfit1Pct, s.Config.TakeProfit2Pct, s.Config.TakeProfit3Pct
+	trailing, maxHours, trailActivation = s.Config.TrailingStopPct, s.Config.MaxHoldingHours, s.Config.TrailActivationPct
 	if p.Exploratory {
 		// A short paper horizon lets the exploration lane produce complete,
 		// reviewable outcomes overnight without changing the strict strategy.
-		return 5, 6, 10, 5, 0.5, 5
+		return 5, 6, 10, 10, 5, 0.5, 5
 	}
 	return
 }
@@ -768,7 +785,7 @@ func (s *SimState) Update(quotes []SimQuote, now time.Time) []string {
 		if p.RemainingCost > 0 {
 			ret = (net - p.RemainingCost) / p.RemainingCost * 100
 		}
-		stopLoss, take1, take2, trailing, maxHours, trailActivation := s.exitRules(p)
+		stopLoss, take1, take2, take3, trailing, maxHours, trailActivation := s.exitRules(p)
 		reason := ""
 		if q.Security == "严重风险" || q.Score <= 0 {
 			reason = "安全状态恶化，紧急退出"
@@ -791,7 +808,9 @@ func (s *SimState) Update(quotes []SimQuote, now time.Time) []string {
 			}
 			continue
 		}
-		// TP1 is a partial exit; TP2 closes the remaining position.
+		// The validation plan takes 35% at TP1, another 35% of the
+		// original amount at TP2, then lets the final 30% run to TP3 or the
+		// configured trailing/risk exit.
 		idx = -1
 		for i := range s.Positions {
 			if s.Positions[i].ID == id {
@@ -807,9 +826,24 @@ func (s *SimState) Update(quotes []SimQuote, now time.Time) []string {
 		if p.RemainingCost > 0 {
 			ret = (net - p.RemainingCost) / p.RemainingCost * 100
 		}
-		if ret >= take2 {
-			if tr, err := s.Sell(id, 1, q, fmt.Sprintf("止盈 %.1f%%", take2), now); err == nil {
-				events = append(events, fmt.Sprintf("%s 达到第二止盈，净盈亏 %+.2f USDC", tr.Symbol, tr.PnL))
+		if ret >= take3 {
+			if tr, err := s.Sell(id, 1, q, fmt.Sprintf("最终止盈 %.1f%%", take3), now); err == nil {
+				events = append(events, fmt.Sprintf("%s 达到最终止盈，净盈亏 %+.2f USDC", tr.Symbol, tr.PnL))
+			}
+		} else if ret >= take2 && !p.TP2Done {
+			for i := range s.Positions {
+				if s.Positions[i].ID == id {
+					s.Positions[i].TP2Done = true
+				}
+			}
+			// 35% of the original position equals 35/65 of the quantity left
+			// after TP1. Clamp protects manually-created legacy positions.
+			fraction := 1.0
+			if p.Quantity > 0 && p.InitialQuantity > 0 {
+				fraction = math.Min(1, (p.InitialQuantity*0.35)/p.Quantity)
+			}
+			if tr, err := s.Sell(id, fraction, q, fmt.Sprintf("第二止盈 %.1f%%，卖出原始仓位 35%%", take2), now); err == nil {
+				events = append(events, fmt.Sprintf("%s 第二止盈，净盈亏 %+.2f USDC", tr.Symbol, tr.PnL))
 			}
 		} else if ret >= take1 && !p.TP1Done {
 			// Mark first so a failed UI refresh cannot repeat the same partial exit.
@@ -818,7 +852,7 @@ func (s *SimState) Update(quotes []SimQuote, now time.Time) []string {
 					s.Positions[i].TP1Done = true
 				}
 			}
-			if tr, err := s.Sell(id, 0.5, q, fmt.Sprintf("第一止盈 %.1f%%，卖出一半", take1), now); err == nil {
+			if tr, err := s.Sell(id, 0.35, q, fmt.Sprintf("第一止盈 %.1f%%，卖出 35%%", take1), now); err == nil {
 				events = append(events, fmt.Sprintf("%s 第一止盈，净盈亏 %+.2f USDC", tr.Symbol, tr.PnL))
 			}
 		}
@@ -1343,11 +1377,5 @@ func (s *SimState) updateDrawdown(quotes []SimQuote) {
 }
 
 func (s *SimState) Reset() {
-	cfg := s.Config
-	profile := s.AutoProfile
 	*s = *NewSimState()
-	s.Config = cfg
-	s.AutoProfile = profile
-	s.Cash = cfg.InitialCash
-	s.EquityPeak = cfg.InitialCash
 }

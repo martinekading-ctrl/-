@@ -1,6 +1,6 @@
-# Multi-Chain Token Radar V2.16
+# Multi-Chain Token Radar V2.17
 
-V2.16 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
+V2.17 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
 Polygon, and Arbitrum. Its
 current workflow is:
 
@@ -14,6 +14,27 @@ current workflow is:
 The application does not connect to a wallet, store private keys, sign orders,
 or submit real transactions. A profitable paper result is not a promise of
 future or live-trading profit.
+
+## V2.17 1,000-USDC validation account and staged exits
+
+- A newly reset paper account starts with **1,000 USDC**, uses a maximum
+  **20-USDC** allocation per strict candidate, permits at most three open
+  positions, and pauses new entries after a 30-USDC realized daily loss.
+- The dedicated **验证** profile still requires strict market-first eligibility:
+  exact recent pool, no older indexed DEX market, complete public security
+  verification, known tax at or below 5%, and the early market gates. It adds
+  a short public-price stability observation before a paper entry.
+- The exit plan models a net 12% hard stop, sells 35% of the original position
+  at 30%, another 35% at 60%, then lets the final 30% target 100% or exit on
+  an 18% drawdown from its high. Security and liquidity emergency exits remain
+  active and take priority.
+- This is a forward paper-validation plan, not a promise of a 100% return.
+  The app has no complete historical record of past pool liquidity, security
+  fields, and executable quotes, so it does not claim a fabricated historical
+  backtest. It collects new timestamped paper observations from this reset
+  account. Validation now requires 100 complete automated positions, positive
+  net P&L after modeled costs, profit factor of at least 1.30, and maximum
+  drawdown no greater than 15%.
 
 ## V2.16 strict signals and a read-only review queue
 
@@ -186,10 +207,10 @@ Partial exits from the same position are combined, and manual paper trades are
 excluded. The app displays paper validation as passed only when all of the
 following are true:
 
-- at least 30 complete automated positions;
+- at least 100 complete automated positions;
 - net P&L after modeled costs is positive;
-- profit factor is at least 1.20;
-- maximum account drawdown is no more than 12%.
+- profit factor is at least 1.30;
+- maximum account drawdown is no more than 15%.
 
 This gate is deliberately labeled **paper validation**. Free public RPC and API
 data can be delayed; simulated fills cannot fully reproduce MEV, failed swaps,
