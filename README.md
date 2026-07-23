@@ -1,6 +1,6 @@
-# Multi-Chain Token Radar V2.11
+# Multi-Chain Token Radar V2.12
 
-V2.11 is a Windows x64 research application for Base, BSC, and Arbitrum. Its
+V2.12 is a Windows x64 research application for Base, BSC, and Arbitrum. Its
 current workflow is:
 
 1. discover recently created DEX pools;
@@ -13,6 +13,20 @@ current workflow is:
 The application does not connect to a wallet, store private keys, sign orders,
 or submit real transactions. A profitable paper result is not a promise of
 future or live-trading profit.
+
+## V2.12 Chinese token research entry point
+
+- Every candidate now has a **中文资料** link that opens the exact token
+  contract on OKLink's Simplified Chinese interface for Base, BNB Chain, and
+  Arbitrum One.
+- The original exact-pool DexScreener link remains available as **原始走势**.
+  It is kept because a just-created pool may not yet be indexed by a Chinese
+  market site.
+- The compact detail panel prioritizes **中文资料**; the expanded detail view
+  provides Chinese token information, the original market chart, and the
+  chain explorer together.
+- Candidate CSV exports now contain a Chinese-token-page column in addition
+  to the original chart and explorer URLs.
 
 ## V2.11 exploration samples and rejection statistics
 
@@ -42,10 +56,9 @@ future or live-trading profit.
   address, so evidence, pool data, and contract text cannot overlap.
 - A page scrollbar on the right shows the current vertical position.
 
-- Every candidate row has a visible **走势图** link that opens the token's
-  specific DexScreener market page.
-- The selected-token panel has separate **查看走势图** and **区块浏览器**
-  actions.
+- Every candidate row has visible **原始走势** and **中文资料** links.
+- The selected-token panel prioritizes **中文资料** and retains the original
+  exact-pool chart as **原始走势**.
 - **展开** opens a large details view with the complete chart URL, explorer
   URL, contract address, pool address, metrics, and all evidence.
 - The candidate list scrolls continuously by three rows per mouse-wheel step

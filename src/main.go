@@ -341,51 +341,53 @@ type appState struct {
 var app = &appState{dpi: 96, uiScale: 1.0, selected: -1, selectedPos: -1, selectedTrade: -1, status: "等待多链实时监控", logs: []string{}, dirty: true, autoRefresh: true, sim: NewSimState(), monitor: NewMonitorState()}
 
 const (
-	idNone         = 0
-	idScan         = 1
-	idStop         = 2
-	idDemo         = 3
-	idExport       = 4
-	idOpenDEX      = 5
-	idTutorial     = 6
-	idDiagnose     = 7
-	idScaleDown    = 8
-	idScaleUp      = 9
-	idAuto         = 10
-	idModalClose   = 11
-	idModalPrev    = 12
-	idModalNext    = 13
-	idPageRadar    = 14
-	idPageSim      = 15
-	idSimBuy       = 16
-	idSimSell      = 17
-	idSimCloseAll  = 18
-	idSimAuto      = 19
-	idSimReset     = 20
-	idSimExport    = 21
-	idFilterAll    = 22
-	idFilterWatch  = 23
-	idFilterSafe   = 24
-	idFilterWait   = 25
-	idSortMode     = 26
-	idSearchBox    = 27
-	idClearSearch  = 28
-	idPrevPage     = 29
-	idNextPage     = 30
-	idSimProfile   = 31
-	idUpdate       = 32
-	idWatchToggle  = 33
-	idMonitorCSV   = 34
-	idDetailChart  = 35
-	idDetailChain  = 36
-	idExpandDetail = 37
-	idModalChart   = 38
-	idModalChain   = 39
-	idRowBase      = 1000
-	idPosBase      = 2000
-	idTradeBase    = 3000
-	idChartBase    = 4000
-	idChainBase    = 5000
+	idNone          = 0
+	idScan          = 1
+	idStop          = 2
+	idDemo          = 3
+	idExport        = 4
+	idOpenDEX       = 5
+	idTutorial      = 6
+	idDiagnose      = 7
+	idScaleDown     = 8
+	idScaleUp       = 9
+	idAuto          = 10
+	idModalClose    = 11
+	idModalPrev     = 12
+	idModalNext     = 13
+	idPageRadar     = 14
+	idPageSim       = 15
+	idSimBuy        = 16
+	idSimSell       = 17
+	idSimCloseAll   = 18
+	idSimAuto       = 19
+	idSimReset      = 20
+	idSimExport     = 21
+	idFilterAll     = 22
+	idFilterWatch   = 23
+	idFilterSafe    = 24
+	idFilterWait    = 25
+	idSortMode      = 26
+	idSearchBox     = 27
+	idClearSearch   = 28
+	idPrevPage      = 29
+	idNextPage      = 30
+	idSimProfile    = 31
+	idUpdate        = 32
+	idWatchToggle   = 33
+	idMonitorCSV    = 34
+	idDetailChart   = 35
+	idDetailChain   = 36
+	idExpandDetail  = 37
+	idModalChart    = 38
+	idModalChain    = 39
+	idDetailChinese = 40
+	idModalChinese  = 41
+	idRowBase       = 1000
+	idPosBase       = 2000
+	idTradeBase     = 3000
+	idChartBase     = 4000
+	idChainBase     = 5000
 )
 
 type layout struct {
@@ -522,8 +524,10 @@ func buildLayout() layout {
 	l.buttons[idWatchToggle] = rect(l.buttons[idExpandDetail].Left-s(102), l.detail.Top+s(8), s(94), s(34))
 	linkGap := s(8)
 	linkW := (rightW - s(36) - linkGap) / 2
-	l.buttons[idDetailChart] = rect(l.detail.Left+s(18), l.detail.Top+s(96), linkW, s(34))
-	l.buttons[idDetailChain] = rect(l.buttons[idDetailChart].Right+linkGap, l.detail.Top+s(96), linkW, s(34))
+	l.buttons[idDetailChinese] = rect(l.detail.Left+s(18), l.detail.Top+s(96), linkW, s(34))
+	l.buttons[idDetailChart] = rect(l.buttons[idDetailChinese].Right+linkGap, l.detail.Top+s(96), linkW, s(34))
+	// The native chain explorer remains available from the expanded detail view.
+	l.buttons[idDetailChain] = l.buttons[idDetailChart]
 	l.buttons[idMonitorCSV] = rect(l.logs.Right-s(126), l.logs.Top+s(8), s(110), s(34))
 	l.table = rect(pad, contentTop, l.detail.Left-pad-gap, contentBottom-contentTop)
 	compactFilters := width(l.table) < s(920)
@@ -619,6 +623,7 @@ func buildLayout() layout {
 	l.modal = rect((W-mw)/2, (H-mh)/2, mw, mh)
 	l.buttons[idModalClose] = rect(l.modal.Right-s(52), l.modal.Top+s(18), s(34), s(34))
 	l.buttons[idModalNext] = rect(l.modal.Right-s(154), l.modal.Bottom-s(64), s(130), s(42))
+	l.buttons[idModalChinese] = rect(l.modal.Right-s(444), l.modal.Top+s(20), s(104), s(38))
 	l.buttons[idModalChart] = rect(l.modal.Right-s(330), l.modal.Top+s(20), s(120), s(38))
 	l.buttons[idModalChain] = rect(l.modal.Right-s(200), l.modal.Top+s(20), s(130), s(38))
 	return l
@@ -1428,8 +1433,8 @@ func drawRows(dc HDC, l layout) {
 		}
 		chartR, chainR := radarRowLinkRects(l, row)
 		text(dc, "合约 "+shortAddr(t.Address), rect(rr.Left+s(12), rr.Top+s(42), width(rr)-s(250), s(22)), fnts.small, col.dim, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-		text(dc, "走势 ↗", chartR, fnts.small, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-		text(dc, "合约页 ↗", chainR, fnts.small, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+		text(dc, "原始走势 ↗", chartR, fnts.small, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+		text(dc, "中文资料 ↗", chainR, fnts.small, col.cyan, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 		y += rowH
 	}
 }
@@ -1507,8 +1512,8 @@ func drawDetails(dc HDC, r RECT) {
 		y := body.Top + s(8)
 		text(dc, fmt.Sprintf("[%s] %s  %s", chainLabel(t.Chain), t.Symbol, t.Name), rect(body.Left+s(8), y, width(body)-s(16), s(30)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 		y += s(36)
-		drawButton(dc, idDetailChart, buildLayout().buttons[idDetailChart], "查看走势图 ↗", true, true)
-		drawButton(dc, idDetailChain, buildLayout().buttons[idDetailChain], "区块浏览器 ↗", true, false)
+		drawButton(dc, idDetailChinese, buildLayout().buttons[idDetailChinese], "中文资料 ↗", true, true)
+		drawButton(dc, idDetailChart, buildLayout().buttons[idDetailChart], "原始走势 ↗", true, false)
 		y += s(42)
 
 		scoreR := rect(body.Left+s(8), y, s(72), s(54))
@@ -1627,7 +1632,7 @@ func drawModal(dc HDC, l layout) {
 		text(dc, "程序说明", rect(r.Left+s(30), r.Top+s(24), width(r)-s(100), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 		body := "怎么使用\n" +
 			"1. 程序默认每 5 秒增量检查 Base、BSC、Arbitrum 新区块；也可以点‘立即扫描’手动刷新。\n" +
-			"2. 每个候选最右侧都有‘走势图’链接；详情页可打开走势图和区块浏览器。\n" +
+			"2. 每个候选最右侧都有‘原始走势’和‘中文资料’链接；详情页优先打开简体中文代币资料，展开后仍可打开原始走势和区块浏览器。\n" +
 			"3. 切换到‘模拟盘’，查看持仓、净盈亏、止损止盈和交易记录。\n" +
 			"4. 在候选列表内滚动可逐行浏览代币；在右侧或空白处滚动可下拉整个页面；点击‘展开’查看完整详情。\n" +
 			"5. 点击‘策略档位’可切换：保守、标准、测试、探索；V2.11 默认探索档，用 ≤1 USDC 生成纸面样本。\n\n" +
@@ -1655,7 +1660,7 @@ func expandedDetailBody(l layout) RECT {
 }
 
 func expandedDetailContentHeight(t Token) int32 {
-	return s(430) + int32(len(t.Evidence))*s(48)
+	return s(482) + int32(len(t.Evidence))*s(48)
 }
 
 func clampDetailScroll(l layout) {
@@ -1681,8 +1686,9 @@ func drawExpandedDetails(dc HDC, l layout) {
 		return
 	}
 	t := app.results[app.selected]
-	text(dc, fmt.Sprintf("[%s] %s · 完整详情", chainLabel(t.Chain), t.Symbol), rect(l.modal.Left+s(30), l.modal.Top+s(20), width(l.modal)-s(390), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	drawButton(dc, idModalChart, l.buttons[idModalChart], "走势图 ↗", true, true)
+	text(dc, fmt.Sprintf("[%s] %s · 完整详情", chainLabel(t.Chain), t.Symbol), rect(l.modal.Left+s(30), l.modal.Top+s(20), width(l.modal)-s(490), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
+	drawButton(dc, idModalChinese, l.buttons[idModalChinese], "中文资料 ↗", true, true)
+	drawButton(dc, idModalChart, l.buttons[idModalChart], "原始走势 ↗", true, false)
 	drawButton(dc, idModalChain, l.buttons[idModalChain], "区块浏览器 ↗", true, false)
 	line(dc, l.modal.Left+s(24), l.modal.Top+s(70), l.modal.Right-s(24), l.modal.Top+s(70), col.border)
 	body := expandedDetailBody(l)
@@ -1691,10 +1697,13 @@ func drawExpandedDetails(dc HDC, l layout) {
 	withClip(dc, body, func() {
 		text(dc, t.Name+"  "+t.Symbol, rect(body.Left, y, width(body)-s(20), s(38)), fnts.section, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 		y += s(42)
+		chineseURL := chineseTokenURL(t.Chain, t.Address)
 		chartURL := selectedDEXURL(t)
 		chainURL := explorerTokenURL(t.Chain, t.Address)
-		text(dc, "走势图链接："+chartURL, rect(body.Left, y, width(body)-s(30), s(42)), fnts.small, col.cyan, DT_LEFT|DT_WORDBREAK|DT_NOPREFIX)
+		text(dc, "中文资料（OKLink）："+chineseURL, rect(body.Left, y, width(body)-s(30), s(42)), fnts.small, col.cyan, DT_LEFT|DT_WORDBREAK|DT_NOPREFIX)
 		y += s(46)
+		text(dc, "原始走势图（新币精确交易池）："+chartURL, rect(body.Left, y, width(body)-s(30), s(42)), fnts.small, col.cyan, DT_LEFT|DT_WORDBREAK|DT_NOPREFIX)
+		y += s(52)
 		text(dc, "区块浏览器："+chainURL, rect(body.Left, y, width(body)-s(30), s(42)), fnts.small, col.cyan, DT_LEFT|DT_WORDBREAK|DT_NOPREFIX)
 		y += s(52)
 
@@ -1763,7 +1772,7 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		loadSimState()
 		loadPreferences()
 		app.monitor = loadMonitorState()
-		addLog("V2.11 已启动：探索样本、影子研究、拒绝原因统计和严格验证分离")
+		addLog("V2.12 已启动：中文资料入口、原始走势链接和中文完整详情已就绪")
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
 		return 0
@@ -1984,7 +1993,7 @@ func hitTest(x, y int32) int {
 	if app.modal != 0 {
 		ids := []int{idModalClose, idModalNext}
 		if app.modal == 3 {
-			ids = []int{idModalClose, idModalChart, idModalChain}
+			ids = []int{idModalClose, idModalChinese, idModalChart, idModalChain}
 		}
 		for _, id := range ids {
 			if contains(l.buttons[id], x, y) {
@@ -1999,7 +2008,7 @@ func hitTest(x, y int32) int {
 		}
 	}
 	if app.page == 0 {
-		for _, id := range []int{idScan, idStop, idDemo, idExport, idOpenDEX, idTutorial, idDiagnose, idScaleDown, idScaleUp, idAuto, idSimBuy, idFilterAll, idFilterWatch, idFilterSafe, idFilterWait, idSortMode, idClearSearch, idSearchBox, idPrevPage, idNextPage, idWatchToggle, idMonitorCSV, idDetailChart, idDetailChain, idExpandDetail} {
+		for _, id := range []int{idScan, idStop, idDemo, idExport, idOpenDEX, idTutorial, idDiagnose, idScaleDown, idScaleUp, idAuto, idSimBuy, idFilterAll, idFilterWatch, idFilterSafe, idFilterWait, idSortMode, idClearSearch, idSearchBox, idPrevPage, idNextPage, idWatchToggle, idMonitorCSV, idDetailChinese, idDetailChart, idExpandDetail} {
 			if contains(l.buttons[id], x, y) {
 				return id
 			}
@@ -2059,6 +2068,8 @@ func handleClick(id int) {
 		exportCSV()
 	case id == idOpenDEX:
 		openSelectedDEX()
+	case id == idDetailChinese || id == idModalChinese:
+		openSelectedChinese()
 	case id == idDetailChart || id == idModalChart:
 		openSelectedDEX()
 	case id == idDetailChain || id == idModalChain:
@@ -4381,7 +4392,7 @@ func addLog(s string) {
 	if len(app.logs) > 100 {
 		app.logs = app.logs[len(app.logs)-100:]
 	}
-	logPath := filepath.Join(dataDir(), "runtime_v211.log")
+	logPath := filepath.Join(dataDir(), "runtime_v212.log")
 	rotateRuntimeLog(logPath)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
@@ -4547,9 +4558,9 @@ func exportCSV() {
 	defer f.Close()
 	_, _ = f.Write([]byte{0xEF, 0xBB, 0xBF})
 	w := csv.NewWriter(f)
-	_ = w.Write([]string{"链", "质量分", "等级", "代币", "名称", "合约", "走势图链接", "区块浏览器链接", "价格", "流动性", "24H成交", "池龄小时", "24H涨跌", "买入税%", "卖出税%", "税费已确认", "安全", "来源"})
+	_ = w.Write([]string{"链", "质量分", "等级", "代币", "名称", "合约", "中文资料链接", "原始走势图链接", "区块浏览器链接", "价格", "流动性", "24H成交", "池龄小时", "24H涨跌", "买入税%", "卖出税%", "税费已确认", "安全", "来源"})
 	for _, t := range app.results {
-		_ = w.Write([]string{chainLabel(t.Chain), strconv.Itoa(t.Score), t.Grade, t.Symbol, t.Name, t.Address, selectedDEXURL(t), explorerTokenURL(t.Chain, t.Address), strconv.FormatFloat(t.Price, 'f', 8, 64), strconv.FormatFloat(t.Liquidity, 'f', 2, 64), strconv.FormatFloat(t.Volume24, 'f', 2, 64), strconv.FormatFloat(t.AgeHours, 'f', 1, 64), strconv.FormatFloat(t.Change24, 'f', 2, 64), strconv.FormatFloat(t.BuyTaxPct, 'f', 2, 64), strconv.FormatFloat(t.SellTaxPct, 'f', 2, 64), strconv.FormatBool(t.TaxKnown), t.Security, t.Source})
+		_ = w.Write([]string{chainLabel(t.Chain), strconv.Itoa(t.Score), t.Grade, t.Symbol, t.Name, t.Address, chineseTokenURL(t.Chain, t.Address), selectedDEXURL(t), explorerTokenURL(t.Chain, t.Address), strconv.FormatFloat(t.Price, 'f', 8, 64), strconv.FormatFloat(t.Liquidity, 'f', 2, 64), strconv.FormatFloat(t.Volume24, 'f', 2, 64), strconv.FormatFloat(t.AgeHours, 'f', 1, 64), strconv.FormatFloat(t.Change24, 'f', 2, 64), strconv.FormatFloat(t.BuyTaxPct, 'f', 2, 64), strconv.FormatFloat(t.SellTaxPct, 'f', 2, 64), strconv.FormatBool(t.TaxKnown), t.Security, t.Source})
 	}
 	w.Flush()
 	app.toast = "CSV 已导出到桌面"
@@ -4573,6 +4584,19 @@ func selectedDEXURL(t Token) string {
 	return u
 }
 
+// chineseTokenURL opens the same token contract in OKLink's Simplified Chinese UI.
+// Unlike a symbol search, an address route remains exact even for a just-created token.
+func chineseTokenURL(chain, address string) string {
+	chainPath := "base"
+	switch normalizeChain(chain) {
+	case "bsc":
+		chainPath = "bsc"
+	case "arbitrum":
+		chainPath = "arbitrum-one"
+	}
+	return "https://www.oklink.com/zh-hans/" + chainPath + "/token/" + url.PathEscape(strings.TrimSpace(address))
+}
+
 func explorerTokenURL(chain, address string) string {
 	base := "https://basescan.org/token/"
 	switch normalizeChain(chain) {
@@ -4592,6 +4616,15 @@ func openSelectedExplorer() {
 	pShellExecuteW.Call(0, uintptr(unsafe.Pointer(utf16Ptr("open"))), uintptr(unsafe.Pointer(utf16Ptr(u))), 0, 0, SW_SHOWNORMAL)
 }
 
+func openSelectedChinese() {
+	if app.selected < 0 || app.selected >= len(app.results) {
+		return
+	}
+	t := app.results[app.selected]
+	u := chineseTokenURL(t.Chain, t.Address)
+	pShellExecuteW.Call(0, uintptr(unsafe.Pointer(utf16Ptr("open"))), uintptr(unsafe.Pointer(utf16Ptr(u))), 0, 0, SW_SHOWNORMAL)
+}
+
 func main() {
 	// Win32 windows and their message queues are thread-affine. Keep the entire
 	// UI loop on one OS thread; otherwise the Go scheduler may migrate the
@@ -4600,8 +4633,8 @@ func main() {
 	// Per-monitor v2 DPI awareness. -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
-	className := utf16Ptr("MultiChainTokenRadarV211Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.11 · 探索样本与拒绝统计")
+	className := utf16Ptr("MultiChainTokenRadarV212Window")
+	title := utf16Ptr("Multi-Chain Token Radar V2.12 · 中文资料与原始走势")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {
