@@ -214,9 +214,9 @@ func TestValidationGroupsPartialExitsByCompletePosition(t *testing.T) {
 	s.MaxDrawdown = 5
 	now := time.Now()
 	s.Trades = []SimTrade{
-		{PositionID: 10, PnL: 0.30, CostAllocated: 2.5, ClosedAt: now.Add(-3 * time.Minute), Automated: true},
-		{PositionID: 10, PnL: 0.20, CostAllocated: 2.5, ClosedAt: now.Add(-2 * time.Minute), Automated: true},
-		{PositionID: 11, PnL: -0.25, CostAllocated: 5, ClosedAt: now.Add(-time.Minute), Automated: true},
+		{PositionID: 10, PnL: 0.30, CostAllocated: 2.5, ClosedAt: now.Add(-3 * time.Minute), Automated: true, ValidationEligible: true},
+		{PositionID: 10, PnL: 0.20, CostAllocated: 2.5, ClosedAt: now.Add(-2 * time.Minute), Automated: true, ValidationEligible: true},
+		{PositionID: 11, PnL: -0.25, CostAllocated: 5, ClosedAt: now.Add(-time.Minute), Automated: true, ValidationEligible: true},
 		{PositionID: 12, PnL: 99, CostAllocated: 5, ClosedAt: now, Automated: false},
 	}
 	v := s.Validation()
@@ -239,10 +239,11 @@ func TestValidationExcludesStillOpenAutomatedPosition(t *testing.T) {
 
 func TestConsecutiveLossesTriggerPaperCircuitBreaker(t *testing.T) {
 	s := NewSimState()
+	s.AutoEnabled = true
 	s.Config.DailyLossLimit = 10
 	now := time.Now()
 	for i := int64(1); i <= 3; i++ {
-		s.Trades = append(s.Trades, SimTrade{PositionID: i, PnL: -0.2, ClosedAt: now.Add(time.Duration(i-3) * time.Minute), Automated: true})
+		s.Trades = append(s.Trades, SimTrade{PositionID: i, PnL: -0.2, ClosedAt: now.Add(time.Duration(i-3) * time.Minute), Automated: true, ValidationEligible: true})
 	}
 	events := s.AutoEvaluate([]SimQuote{testQuote(1)}, now)
 	if len(events) == 0 || len(s.Positions) != 0 {
@@ -250,12 +251,12 @@ func TestConsecutiveLossesTriggerPaperCircuitBreaker(t *testing.T) {
 	}
 }
 
-func TestV28MigrationEnablesOnlyPaperAutomation(t *testing.T) {
+func TestV219MigrationPausesExistingPaperAutomationForQuoteIntegrity(t *testing.T) {
 	s := &SimState{Version: 1, Config: DefaultSimConfig(), Cash: 100}
 	s.Config.MaxHoldingHours = 24
 	s.Config.LiquidityDropPct = 30
 	s.Normalize()
-	if s.Version != 4 || !s.AutoEnabled || s.AutoProfile != AutoProfileExplore {
+	if s.Version != 5 || s.AutoEnabled || s.AutoProfile != AutoProfileExplore {
 		t.Fatalf("expected current paper-only migration: version=%d auto=%v profile=%d", s.Version, s.AutoEnabled, s.AutoProfile)
 	}
 	if s.Config.MaxHoldingHours != 2 || s.Config.LiquidityDropPct != 25 {
@@ -374,5 +375,57 @@ func TestSecurityDeteriorationForcesExit(t *testing.T) {
 	s.Update([]SimQuote{bad}, now.Add(time.Minute))
 	if len(s.Positions) != 0 || len(s.Trades) != 1 || s.Trades[0].PositionID != p.ID {
 		t.Fatalf("security deterioration must exit: positions=%d trades=%+v", len(s.Positions), s.Trades)
+	}
+}
+
+func TestQuoteInterruptionPausesAutomationWithoutInventingAnExit(t *testing.T) {
+	s := NewSimState()
+	s.AutoEnabled = true
+	now := time.Now()
+	q := testQuote(1)
+	q.Chain = "base"
+	q.PoolAddress = "0x2222222222222222222222222222222222222222"
+	p, err := s.Buy(q, 5, "自动策略：test", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events := s.Update(nil, now.Add(time.Minute))
+	if len(s.Positions) != 1 || len(s.Trades) != 0 {
+		t.Fatalf("missing quote must not fabricate a sale: positions=%d trades=%+v", len(s.Positions), s.Trades)
+	}
+	if !s.QuoteSafetyPaused || s.Positions[0].QuoteInterruptedAt.IsZero() {
+		t.Fatalf("missing quote must enter the persisted safety state: %+v", s)
+	}
+	if len(events) == 0 {
+		t.Fatal("quote interruption must be visible as an event")
+	}
+	if next := testQuote(1.02); len(s.AutoEvaluate([]SimQuote{next}, now.Add(2*time.Minute))) != 0 || s.LastEntryStats.Rejections["持仓报价完整性保护"] == 0 {
+		t.Fatalf("automatic entries must be paused while a position is unpriced: stats=%+v", s.LastEntryStats)
+	}
+
+	q.Price = 1.02
+	q.Time = now.Add(3 * time.Minute)
+	s.Update([]SimQuote{q}, q.Time)
+	if s.QuoteSafetyPaused || !s.Positions[0].QuoteInterruptedAt.IsZero() {
+		t.Fatalf("a fresh exact-pool quote must clear only the quote-integrity pause: %+v", s.Positions[0])
+	}
+	if s.Positions[0].PoolAddress != p.PoolAddress {
+		t.Fatalf("position lost its exact entry pool: got %s want %s", s.Positions[0].PoolAddress, p.PoolAddress)
+	}
+}
+
+func TestV219MigrationExcludesLegacyTradesFromValidation(t *testing.T) {
+	now := time.Now()
+	s := &SimState{
+		Version: 4, Config: DefaultSimConfig(), Cash: 1000,
+		Trades: []SimTrade{{PositionID: 1, PnL: 50, CostAllocated: 20, ClosedAt: now, Automated: true}},
+	}
+	s.Normalize()
+	if s.AutoEnabled || s.Trades[0].ValidationEligible {
+		t.Fatalf("legacy account must be paused and excluded from validation: %+v", s)
+	}
+	if got := s.Validation().ClosedPositions; got != 0 {
+		t.Fatalf("legacy paper result must not be counted by hardened validation, got %d", got)
 	}
 }

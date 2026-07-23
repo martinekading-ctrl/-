@@ -1,6 +1,6 @@
-# Multi-Chain Token Radar V2.18
+# Multi-Chain Token Radar V2.19
 
-V2.18 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
+V2.19 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
 Polygon, and Arbitrum. Its
 current workflow is:
 
@@ -14,6 +14,25 @@ current workflow is:
 The application does not connect to a wallet, store private keys, sign orders,
 or submit real transactions. A profitable paper result is not a promise of
 future or live-trading profit.
+
+## V2.19 exact-pool quote integrity and strict paper-entry safety
+
+- Every new paper position persists the exact DEX pool address used at entry.
+  Subsequent scans prefer that pool over another pool for the same token, so a
+  mark or exit cannot silently switch markets.
+- If an open position loses its usable exact-pool quote, the simulator records a
+  visible quote interruption, pauses new automatic paper entries, and does not
+  invent a sale at the last seen price. That position is visibly excluded from
+  validation until a fresh quote returns.
+- Automatic strict entries now fail closed when public security data is missing.
+  They reject mutable tax/cooldown/anti-whale controls, hidden ownership,
+  transfer pausing, external-call transfer logic, a largest unlocked holder
+  above 15%, top-ten unlocked holdings above 60%, or LP lock below 80%.
+- New and migrated paper accounts start with automatic entries disabled. The
+  operator must explicitly enable paper automation after observing fresh data.
+- Trades and positions created before this integrity upgrade remain visible for
+  audit, but are excluded from hardened strategy validation. Only positions
+  opened under V2.19's exact-pool controls can contribute to a validation pass.
 
 ## V2.18 stable Simplified-Chinese market pages
 
@@ -104,9 +123,12 @@ pass every public-data gate below:
 4. exact-pool liquidity is at least 10,000 USD, with at least four 1-hour buy
    transactions and no more sells than buys;
 5. GoPlus returns a complete safe result: source is open, no honeypot,
-   blacklist, cannot-sell, balance-change, self-destruct, proxy, or minting
-   flag; buy/sell tax is known and at most 5%; creator/owner share is at most
-   20%; and at least 20 holders are reported.
+   blacklist, cannot-sell, balance-change, self-destruct, proxy, minting,
+   hidden-owner, mutable-tax, pausable-transfer, cooldown, mutable anti-whale,
+   or external-call flag; buy/sell tax is known and at most 5%; creator/owner
+   share is at most 20%; at least 20 holders are reported; the largest unlocked
+   holder is at most 15%, the top-ten unlocked holders are at most 60%, and at
+   least 80% of reported LP ownership is locked.
 
 Candidates waiting for indexing or failing any one gate are retained in the
 local re-check cache and may appear as visibly read-only review rows with their

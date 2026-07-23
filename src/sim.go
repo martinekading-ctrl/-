@@ -56,6 +56,7 @@ func DefaultSimConfig() SimConfig {
 type SimQuote struct {
 	Chain             string    `json:"chain"`
 	Address           string    `json:"address"`
+	PoolAddress       string    `json:"pool_address,omitempty"`
 	Symbol            string    `json:"symbol"`
 	Name              string    `json:"name"`
 	Price             float64   `json:"price"`
@@ -84,6 +85,7 @@ type SimPosition struct {
 	ID               int64     `json:"id"`
 	Chain            string    `json:"chain"`
 	Address          string    `json:"address"`
+	PoolAddress      string    `json:"pool_address,omitempty"`
 	Symbol           string    `json:"symbol"`
 	Name             string    `json:"name"`
 	Quantity         float64   `json:"quantity"`
@@ -101,33 +103,42 @@ type SimPosition struct {
 	EntryScore       int       `json:"entry_score"`
 	EntrySecurity    string    `json:"entry_security"`
 	LastQuoteAt      time.Time `json:"last_quote_at"`
-	OpenedAt         time.Time `json:"opened_at"`
-	TP1Done          bool      `json:"tp1_done"`
-	TP2Done          bool      `json:"tp2_done"`
-	Automated        bool      `json:"automated"`
-	Exploratory      bool      `json:"exploratory"`
-	EntryReason      string    `json:"entry_reason"`
+	// QuoteInterruptedAt is non-zero when the scanner can no longer provide a
+	// usable quote for the exact pool used at entry.  It prevents the simulator
+	// from silently treating the last price as a live, executable price.
+	QuoteInterruptedAt time.Time `json:"quote_interrupted_at,omitempty"`
+	OpenedAt           time.Time `json:"opened_at"`
+	TP1Done            bool      `json:"tp1_done"`
+	TP2Done            bool      `json:"tp2_done"`
+	Automated          bool      `json:"automated"`
+	Exploratory        bool      `json:"exploratory"`
+	EntryReason        string    `json:"entry_reason"`
+	// ValidationEligible is false for positions that existed before the
+	// quote-integrity model. Their later closes remain visible, but cannot be
+	// used as evidence that the hardened strategy works.
+	ValidationEligible bool `json:"validation_eligible"`
 }
 
 type SimTrade struct {
-	ID            int64     `json:"id"`
-	Chain         string    `json:"chain"`
-	PositionID    int64     `json:"position_id"`
-	Address       string    `json:"address"`
-	Symbol        string    `json:"symbol"`
-	Quantity      float64   `json:"quantity"`
-	EntryPrice    float64   `json:"entry_price"`
-	ExitPrice     float64   `json:"exit_price"`
-	CostAllocated float64   `json:"cost_allocated"`
-	NetProceeds   float64   `json:"net_proceeds"`
-	Fees          float64   `json:"fees"`
-	PnL           float64   `json:"pnl"`
-	PnLPct        float64   `json:"pnl_pct"`
-	OpenedAt      time.Time `json:"opened_at"`
-	ClosedAt      time.Time `json:"closed_at"`
-	Reason        string    `json:"reason"`
-	Automated     bool      `json:"automated"`
-	Exploratory   bool      `json:"exploratory"`
+	ID                 int64     `json:"id"`
+	Chain              string    `json:"chain"`
+	PositionID         int64     `json:"position_id"`
+	Address            string    `json:"address"`
+	Symbol             string    `json:"symbol"`
+	Quantity           float64   `json:"quantity"`
+	EntryPrice         float64   `json:"entry_price"`
+	ExitPrice          float64   `json:"exit_price"`
+	CostAllocated      float64   `json:"cost_allocated"`
+	NetProceeds        float64   `json:"net_proceeds"`
+	Fees               float64   `json:"fees"`
+	PnL                float64   `json:"pnl"`
+	PnLPct             float64   `json:"pnl_pct"`
+	OpenedAt           time.Time `json:"opened_at"`
+	ClosedAt           time.Time `json:"closed_at"`
+	Reason             string    `json:"reason"`
+	Automated          bool      `json:"automated"`
+	Exploratory        bool      `json:"exploratory"`
+	ValidationEligible bool      `json:"validation_eligible"`
 }
 
 // ShadowSample tracks a near-miss without reserving paper cash. It is research
@@ -218,45 +229,56 @@ type EntryDiagnostics struct {
 }
 
 type SimMetrics struct {
-	Cash          float64
-	PositionValue float64
-	Equity        float64
-	NetPnL        float64
-	RealizedPnL   float64
-	UnrealizedPnL float64
-	WinRate       float64
-	MaxDrawdown   float64
-	Trades        int
-	Wins          int
+	Cash              float64
+	PositionValue     float64
+	Equity            float64
+	NetPnL            float64
+	RealizedPnL       float64
+	UnrealizedPnL     float64
+	WinRate           float64
+	MaxDrawdown       float64
+	Trades            int
+	Wins              int
+	UnpricedPositions int
+	UnpricedCost      float64
 }
 
 type SimState struct {
-	Version          int                        `json:"version"`
-	Config           SimConfig                  `json:"config"`
-	Cash             float64                    `json:"cash"`
-	Positions        []SimPosition              `json:"positions"`
-	Trades           []SimTrade                 `json:"trades"`
-	Snapshots        map[string][]PriceSnapshot `json:"snapshots"`
-	AutoEnabled      bool                       `json:"auto_enabled"`
-	AutoProfile      int                        `json:"auto_profile"`
-	NextID           int64                      `json:"next_id"`
-	EquityPeak       float64                    `json:"equity_peak"`
-	MaxDrawdown      float64                    `json:"max_drawdown"`
-	LastAutoEntry    map[string]time.Time       `json:"last_auto_entry"`
-	LastShadow       map[string]time.Time       `json:"last_shadow"`
-	ShadowSamples    []ShadowSample             `json:"shadow_samples"`
-	ShadowOutcomes   []ShadowOutcome            `json:"shadow_outcomes"`
-	FunnelSamples    []FunnelReviewSample       `json:"funnel_samples"`
-	FunnelOutcomes   []FunnelReviewOutcome      `json:"funnel_outcomes"`
-	LastFunnelReview map[string]time.Time       `json:"last_funnel_review"`
-	LastEntryStats   EntryDiagnostics           `json:"last_entry_stats"`
+	Version     int                        `json:"version"`
+	Config      SimConfig                  `json:"config"`
+	Cash        float64                    `json:"cash"`
+	Positions   []SimPosition              `json:"positions"`
+	Trades      []SimTrade                 `json:"trades"`
+	Snapshots   map[string][]PriceSnapshot `json:"snapshots"`
+	AutoEnabled bool                       `json:"auto_enabled"`
+	// QuoteSafetyPaused blocks new automatic paper entries whenever an existing
+	// position loses its exact-pool quote. It is intentionally separate from the
+	// user's AutoEnabled switch so a temporary source outage cannot be mistaken
+	// for a manual strategy decision.
+	QuoteSafetyPaused bool                  `json:"quote_safety_paused"`
+	QuoteSafetyReason string                `json:"quote_safety_reason,omitempty"`
+	QuoteSafetySince  time.Time             `json:"quote_safety_since,omitempty"`
+	AutoProfile       int                   `json:"auto_profile"`
+	NextID            int64                 `json:"next_id"`
+	EquityPeak        float64               `json:"equity_peak"`
+	MaxDrawdown       float64               `json:"max_drawdown"`
+	LastAutoEntry     map[string]time.Time  `json:"last_auto_entry"`
+	LastShadow        map[string]time.Time  `json:"last_shadow"`
+	ShadowSamples     []ShadowSample        `json:"shadow_samples"`
+	ShadowOutcomes    []ShadowOutcome       `json:"shadow_outcomes"`
+	FunnelSamples     []FunnelReviewSample  `json:"funnel_samples"`
+	FunnelOutcomes    []FunnelReviewOutcome `json:"funnel_outcomes"`
+	LastFunnelReview  map[string]time.Time  `json:"last_funnel_review"`
+	LastEntryStats    EntryDiagnostics      `json:"last_entry_stats"`
 }
 
 func NewSimState() *SimState {
 	cfg := DefaultSimConfig()
 	return &SimState{
-		Version: 4, Config: cfg, Cash: cfg.InitialCash, Snapshots: map[string][]PriceSnapshot{},
-		AutoEnabled: true, NextID: 1, EquityPeak: cfg.InitialCash,
+		Version: 5, Config: cfg, Cash: cfg.InitialCash, Snapshots: map[string][]PriceSnapshot{},
+		// Automatic paper trading is opt-in. A new installation must first collect
+		// enough fresh, exact-pool observations for the selected candidate.
+		AutoEnabled: false, NextID: 1, EquityPeak: cfg.InitialCash,
 		LastAutoEntry: map[string]time.Time{}, LastShadow: map[string]time.Time{}, LastFunnelReview: map[string]time.Time{}, AutoProfile: AutoProfileValidation,
 	}
 }
@@ -366,6 +388,7 @@ func (s *SimState) Normalize() {
 	for i := range s.Positions {
 		s.Positions[i].Chain = normalizeChain(s.Positions[i].Chain)
 		s.Positions[i].Address = normalizeAddress(s.Positions[i].Address)
+		s.Positions[i].PoolAddress = normalizeAddress(s.Positions[i].PoolAddress)
 	}
 	for i := range s.Trades {
 		s.Trades[i].Chain = normalizeChain(s.Trades[i].Chain)
@@ -404,6 +427,26 @@ func (s *SimState) Normalize() {
 		// the strict market-first funnel. It cannot create positions or affect
 		// paper-validation statistics.
 		s.Version = 4
+	}
+	if oldVersion < 5 {
+		// V2.19 makes exact-pool tracking and quote continuity mandatory for
+		// automatic paper entries. Existing accounts are paused once so their
+		// historical positions cannot be mistaken for validated strategy data.
+		s.Version = 5
+		s.AutoEnabled = false
+		for i := range s.Positions {
+			s.Positions[i].ValidationEligible = false
+		}
+		for i := range s.Trades {
+			s.Trades[i].ValidationEligible = false
+		}
+		if len(s.Positions) > 0 {
+			s.QuoteSafetyPaused = true
+			s.QuoteSafetyReason = "升级后需恢复全部持仓的精确池报价"
+			if s.QuoteSafetySince.IsZero() {
+				s.QuoteSafetySince = time.Now()
+			}
+		}
 	}
 }
 
@@ -621,13 +664,14 @@ func (s *SimState) Buy(q SimQuote, amount float64, reason string, now time.Time)
 	}
 
 	p := SimPosition{
-		ID: s.NextID, Chain: q.Chain, Address: q.Address, Symbol: q.Symbol, Name: q.Name,
+		ID: s.NextID, Chain: q.Chain, Address: q.Address, PoolAddress: normalizeAddress(q.PoolAddress), Symbol: q.Symbol, Name: q.Name,
 		Quantity: qty, InitialQuantity: qty, EntryPrice: executionPrice,
 		EntryCost: amount, RemainingCost: amount, EntryLiquidity: q.Liquidity,
 		CurrentPrice: q.Price, CurrentLiquidity: q.Liquidity,
 		HighestPrice: q.Price, LowestPrice: q.Price, BuyTaxPct: q.BuyTaxPct, SellTaxPct: q.SellTaxPct,
 		EntryScore: q.Score, EntrySecurity: q.Security, LastQuoteAt: q.Time,
 		OpenedAt: now, Automated: strings.HasPrefix(reason, "自动策略："), Exploratory: strings.Contains(reason, "探索档"), EntryReason: reason,
+		ValidationEligible: true,
 	}
 	if p.LastQuoteAt.IsZero() {
 		p.LastQuoteAt = now
@@ -711,7 +755,7 @@ func (s *SimState) Sell(positionID int64, fraction float64, q SimQuote, reason s
 		Quantity: qty, EntryPrice: p.EntryPrice, ExitPrice: q.Price,
 		CostAllocated: costAllocated, NetProceeds: net, Fees: fees,
 		PnL: pnl, PnLPct: pnlPct, OpenedAt: p.OpenedAt, ClosedAt: now, Reason: reason,
-		Automated: p.Automated, Exploratory: p.Exploratory,
+		Automated: p.Automated, Exploratory: p.Exploratory, ValidationEligible: p.ValidationEligible,
 	}
 	s.NextID++
 	s.Cash += net
@@ -743,11 +787,24 @@ func (s *SimState) Update(quotes []SimQuote, now time.Time) []string {
 	qm := quoteMap(quotes)
 	events := []string{}
 	ids := make([]int64, 0, len(s.Positions))
+	quoteInterrupted := false
 	for i := range s.Positions {
 		p := &s.Positions[i]
 		q, ok := qm[simKey(p.Chain, p.Address)]
 		if !ok || q.Price <= 0 {
+			quoteInterrupted = true
+			if p.QuoteInterruptedAt.IsZero() {
+				p.QuoteInterruptedAt = now
+				events = append(events, fmt.Sprintf("%s 精确池报价中断：暂停自动开仓和收益统计，等待数据恢复", p.Symbol))
+			}
 			continue
+		}
+		if p.PoolAddress == "" && q.PoolAddress != "" {
+			p.PoolAddress = normalizeAddress(q.PoolAddress)
+		}
+		if !p.QuoteInterruptedAt.IsZero() {
+			p.QuoteInterruptedAt = time.Time{}
+			events = append(events, fmt.Sprintf("%s 精确池报价已恢复", p.Symbol))
 		}
 		p.CurrentPrice, p.CurrentLiquidity = q.Price, q.Liquidity
 		p.SellTaxPct = q.SellTaxPct
@@ -762,6 +819,21 @@ func (s *SimState) Update(quotes []SimQuote, now time.Time) []string {
 			p.LowestPrice = q.Price
 		}
 		ids = append(ids, p.ID)
+	}
+	if quoteInterrupted {
+		if !s.QuoteSafetyPaused {
+			events = append(events, "持仓报价完整性保护已启动：自动模拟暂停，现有仓位不使用过期价格伪造平仓")
+		}
+		s.QuoteSafetyPaused = true
+		s.QuoteSafetyReason = "至少一个持仓缺少精确池实时报价"
+		if s.QuoteSafetySince.IsZero() {
+			s.QuoteSafetySince = now
+		}
+	} else if s.QuoteSafetyPaused {
+		s.QuoteSafetyPaused = false
+		s.QuoteSafetyReason = ""
+		s.QuoteSafetySince = time.Time{}
+		events = append(events, "持仓精确池报价已恢复完整，自动模拟可在人工确认后继续")
 	}
 	// Work from stable IDs because partial/full sells modify the slice.
 	for _, id := range ids {
@@ -1269,6 +1341,11 @@ func (s *SimState) AutoEvaluate(quotes []SimQuote, now time.Time) []string {
 		s.LastEntryStats = stats
 		return nil
 	}
+	if s.QuoteSafetyPaused {
+		stats.Rejections["持仓报价完整性保护"] = len(quotes)
+		s.LastEntryStats = stats
+		return nil
+	}
 	if len(s.Positions) >= s.Config.MaxPositions {
 		stats.Rejections["达到最大持仓"] = len(quotes)
 		s.LastEntryStats = stats
@@ -1330,7 +1407,7 @@ func (s *SimState) quoteForPosition(p SimPosition, quotes []SimQuote) SimQuote {
 			return q
 		}
 	}
-	return SimQuote{Chain: p.Chain, Address: p.Address, Symbol: p.Symbol, Name: p.Name, Price: p.CurrentPrice, Liquidity: p.CurrentLiquidity, SellTaxPct: p.SellTaxPct, Time: time.Now()}
+	return SimQuote{Chain: p.Chain, Address: p.Address, PoolAddress: p.PoolAddress, Symbol: p.Symbol, Name: p.Name, Price: p.CurrentPrice, Liquidity: p.CurrentLiquidity, SellTaxPct: p.SellTaxPct, Time: time.Now()}
 }
 
 func (s *SimState) Metrics(quotes []SimQuote) SimMetrics {
@@ -1338,6 +1415,10 @@ func (s *SimState) Metrics(quotes []SimQuote) SimMetrics {
 	qm := quoteMap(quotes)
 	m := SimMetrics{Cash: s.Cash, Equity: s.Cash}
 	for _, p := range s.Positions {
+		if !p.QuoteInterruptedAt.IsZero() {
+			m.UnpricedPositions++
+			m.UnpricedCost += p.RemainingCost
+		}
 		q, ok := qm[simKey(p.Chain, p.Address)]
 		price, liq := p.CurrentPrice, p.CurrentLiquidity
 		if ok && q.Price > 0 {

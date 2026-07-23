@@ -985,7 +985,7 @@ func drawCommonHeader(dc HDC, l layout, subtitle string) {
 }
 
 func drawSimUI(dc HDC, l layout) {
-	drawCommonHeader(dc, l, "V2.18 稳定中文行情入口 · $1,000 策略验证 · 不连接钱包")
+	drawCommonHeader(dc, l, "V2.19 精确池报价保护 · $1,000 策略验证 · 不连接钱包")
 	if app.sim == nil {
 		app.sim = NewSimState()
 	}
@@ -1023,6 +1023,9 @@ func drawSimUI(dc HDC, l layout) {
 		fmt.Sprintf("最大回撤 %.1f%%", m.MaxDrawdown),
 		fmt.Sprintf("胜 %d，均值 %+.1f%% · 影子闭合 %d，胜 %d，均值 %+.1f%%", funnelWins, funnelAvg, shadowClosed, shadowWins, shadowAvg),
 	}
+	if m.UnpricedPositions > 0 {
+		subs[0] = fmt.Sprintf("%d 个仓位报价中断（成本 %.2f），不计入验证", m.UnpricedPositions, m.UnpricedCost)
+	}
 	accents := []uint32{col.blue, col.cyan, col.green, col.yellow}
 	for i, r := range l.cards {
 		roundRect(dc, r, col.panel, col.border, s(9))
@@ -1047,6 +1050,10 @@ func drawSimUI(dc HDC, l layout) {
 		bf, bb = col.greenBg, col.green
 		banner = fmt.Sprintf("纸面验证通过：%d 笔完整自动交易 · 净收益 %+.2f · PF %s；仍需继续观察。", v.ClosedPositions, v.NetPnL, v.ProfitFactorText())
 	}
+	if app.sim.QuoteSafetyPaused {
+		bf, bb = col.yellowBg, col.yellow
+		banner = "报价完整性保护：" + app.sim.QuoteSafetyReason + "。已暂停自动开仓；恢复后请人工复核再继续。"
+	}
 	roundRect(dc, l.banner, bf, bb, s(7))
 	text(dc, banner, inset(l.banner, s(14)), fnts.body, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 
@@ -1060,7 +1067,11 @@ func drawSimUI(dc HDC, l layout) {
 	line(dc, 0, l.statusbar.Top, l.statusbar.Right, l.statusbar.Top, col.border)
 	ellipse(dc, rect(s(8), l.statusbar.Top+s(9), s(8), s(8)), col.green, col.green)
 	text(dc, fmt.Sprintf("模拟盘：不连接钱包、不发送交易 · 最近价格 %s", lastUpdateText()), rect(s(24), l.statusbar.Top, s(920), height(l.statusbar)), fnts.small, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
-	text(dc, fmt.Sprintf("自动策略：%s（%s档） · 实时监控：%s", onOff(app.sim.AutoEnabled), app.sim.ProfileName(), onOff(app.autoRefresh)), rect(l.statusbar.Right-s(430), l.statusbar.Top, s(415), height(l.statusbar)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
+	safety := "正常"
+	if app.sim.QuoteSafetyPaused {
+		safety = "报价保护暂停"
+	}
+	text(dc, fmt.Sprintf("自动策略：%s（%s档） · %s · 实时监控：%s", onOff(app.sim.AutoEnabled), app.sim.ProfileName(), safety, onOff(app.autoRefresh)), rect(l.statusbar.Right-s(560), l.statusbar.Top, s(545), height(l.statusbar)), fnts.small, col.muted, DT_RIGHT|DT_VCENTER|DT_SINGLELINE)
 	drawPageScrollbar(dc, l)
 	if app.toast != "" && time.Now().Before(app.toastUntil) {
 		tr := rect(l.client.Right-s(380), l.client.Bottom-s(88), s(350), s(48))
@@ -1114,7 +1125,11 @@ func drawSimPositions(dc HDC, l layout) {
 		if p.RemainingCost > 0 {
 			ret = (net - p.RemainingCost) / p.RemainingCost * 100
 		}
-		vals := []string{"[" + chainLabel(p.Chain) + "] " + p.Symbol, fmt.Sprintf("%.2f", p.RemainingCost), price(priceV), fmt.Sprintf("%+.1f%%", ret), durationText(time.Since(p.OpenedAt))}
+		name := "[" + chainLabel(p.Chain) + "] " + p.Symbol
+		if !p.QuoteInterruptedAt.IsZero() {
+			name += " · 报价中断"
+		}
+		vals := []string{name, fmt.Sprintf("%.2f", p.RemainingCost), price(priceV), fmt.Sprintf("%+.1f%%", ret), durationText(time.Since(p.OpenedAt))}
 		x = rr.Left
 		for j, v := range vals {
 			cw := int32(float64(width(rr)) * fr[j])
@@ -1123,6 +1138,9 @@ func drawSimPositions(dc HDC, l layout) {
 				tc = col.green
 			} else if j == 3 {
 				tc = col.red
+			}
+			if j == 0 && !p.QuoteInterruptedAt.IsZero() {
+				tc = col.yellow
 			}
 			text(dc, v, rect(x+s(5), rr.Top, cw-s(10), height(rr)), fnts.table, tc, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS)
 			x += cw
@@ -1851,7 +1869,7 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		loadSimState()
 		loadPreferences()
 		app.monitor = loadMonitorState()
-		addLog("V2.18 已启动：中文行情使用精确交易池简体中文入口；审查项不可模拟买入，不连接钱包")
+		addLog("V2.19 已启动：精确池报价保护与严格安全门槛已启用；审查项不可模拟买入，不连接钱包")
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
 		return 0
@@ -2396,17 +2414,22 @@ func startScan(manual bool) {
 		addLog("开始手动扫描；6 链模式最长等待 90 秒，超时会自动停止并保留旧结果")
 	}
 	invalidate(false)
-	held := []string{}
+	held := []multiCandidate{}
 	if app.sim != nil {
 		for _, p := range app.sim.Positions {
-			held = append(held, simKey(p.Chain, p.Address))
+			held = append(held, multiCandidate{Chain: p.Chain, TokenAddress: p.Address, PoolAddress: p.PoolAddress, Factory: "模拟持仓跟踪"})
 		}
 	}
 	if app.monitor != nil {
-		held = append(held, app.monitor.WatchedIdentities()...)
+		for _, identity := range app.monitor.WatchedIdentities() {
+			parts := strings.SplitN(identity, "|", 2)
+			if len(parts) == 2 {
+				held = append(held, multiCandidate{Chain: parts[0], TokenAddress: parts[1], Factory: "可信监控跟踪"})
+			}
+		}
 	}
-	go func(scanID uint64, heldAddresses []string) {
-		tokens, logs, stats, err := multiScanMarket(ctx, heldAddresses)
+	go func(scanID uint64, heldRefs []multiCandidate) {
+		tokens, logs, stats, err := multiScanMarket(ctx, heldRefs)
 		out := scanOutcome{id: scanID, tokens: tokens, stats: stats, logs: logs, err: err, manual: manual}
 		select {
 		case scanOutcomeCh <- out:
@@ -4277,7 +4300,7 @@ func tokensToQuotes(tokens []Token, now time.Time) []SimQuote {
 		if quoteTime.IsZero() {
 			quoteTime = now
 		}
-		out = append(out, SimQuote{Chain: t.Chain, Address: t.Address, Symbol: t.Symbol, Name: t.Name, Price: t.Price, Liquidity: t.Liquidity, BuyTaxPct: t.BuyTaxPct, SellTaxPct: t.SellTaxPct, TaxKnown: t.TaxKnown, Score: t.Score, Security: t.Security, PotentialEligible: t.PotentialEligible, Buys: t.Buys24, Sells: t.Sells24, Volume24: t.Volume24, AgeHours: t.AgeHours, Source: t.Source, Time: quoteTime})
+		out = append(out, SimQuote{Chain: t.Chain, Address: t.Address, PoolAddress: t.PoolAddress, Symbol: t.Symbol, Name: t.Name, Price: t.Price, Liquidity: t.Liquidity, BuyTaxPct: t.BuyTaxPct, SellTaxPct: t.SellTaxPct, TaxKnown: t.TaxKnown, Score: t.Score, Security: t.Security, PotentialEligible: t.PotentialEligible, Buys: t.Buys24, Sells: t.Sells24, Volume24: t.Volume24, AgeHours: t.AgeHours, Source: t.Source, Time: quoteTime})
 	}
 	return out
 }
@@ -4828,7 +4851,7 @@ func main() {
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
 	className := utf16Ptr("MultiChainTokenRadarV218Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.18 · 稳定中文行情与策略验证")
+	title := utf16Ptr("Multi-Chain Token Radar V2.19 · 精确池报价保护与策略验证")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {

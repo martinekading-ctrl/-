@@ -721,6 +721,12 @@ const (
 	strictMinH1Buys         = 4
 	strictMinHolders        = 20
 	strictMaxAdminPct       = 0.20
+	// Automatic paper entries are intentionally stricter than the research
+	// score. These limits apply only to the "严格观察" funnel, never to the
+	// read-only review list.
+	strictMaxTopHolderPct = 0.15
+	strictMaxTopTenPct    = 0.60
+	strictMinLPLockPct    = 0.80
 )
 
 // exactPoolAssessment keeps the scanner honest about which DEX pool it is
@@ -805,7 +811,10 @@ func strictMarketFirstQualification(q exactPoolAssessment, t Token, sec map[stri
 	if !isOne(sec, "is_open_source") {
 		return false, "合约未确认开源"
 	}
-	for _, key := range []string{"is_honeypot", "cannot_sell_all", "is_blacklisted", "owner_change_balance", "selfdestruct", "is_proxy", "is_mintable"} {
+	for _, key := range []string{"is_honeypot", "cannot_sell_all", "is_blacklisted", "owner_change_balance", "selfdestruct", "is_proxy", "is_mintable", "hidden_owner", "transfer_pausable", "slippage_modifiable", "personal_slippage_modifiable", "trading_cooldown", "anti_whale_modifiable", "external_call"} {
+		if val(sec, key) == "" {
+			return false, "安全接口缺少自动开仓必需字段：" + key
+		}
 		if isOne(sec, key) {
 			return false, "安全硬门槛未通过：" + key
 		}
@@ -819,7 +828,23 @@ func strictMarketFirstQualification(q exactPoolAssessment, t Token, sec map[stri
 	if holders := int(fnum(val(sec, "holder_count"))); holders < strictMinHolders {
 		return false, "持币地址少于 20 个"
 	}
-	return true, "通过严格市场首发资格：精确新池、无更早 DEX 记录、安全完整、早期买盘成立"
+	maxHolder, topTen, listed := holderConcentration(sec)
+	if listed == 0 {
+		return false, "安全接口未返回可核验的前十持仓分布"
+	}
+	if maxHolder > strictMaxTopHolderPct {
+		return false, fmt.Sprintf("最大未锁定持仓 %.1f%% 超过严格上限 %.1f%%", maxHolder*100, strictMaxTopHolderPct*100)
+	}
+	if topTen > strictMaxTopTenPct {
+		return false, fmt.Sprintf("前十未锁定持仓合计 %.1f%% 超过严格上限 %.1f%%", topTen*100, strictMaxTopTenPct*100)
+	}
+	if !t.LPLockKnown {
+		return false, "未取得可核验的 LP 锁定分布"
+	}
+	if t.LPLockPct < strictMinLPLockPct {
+		return false, fmt.Sprintf("LP 锁定 %.1f%% 低于严格下限 %.1f%%", t.LPLockPct*100, strictMinLPLockPct*100)
+	}
+	return true, "通过严格市场首发资格：精确新池、无更早 DEX 记录、安全完整、LP 锁定与持仓分布均通过"
 }
 
 func topQualificationReasons(reasons map[string]int, limit int) string {
@@ -902,7 +927,49 @@ func strictRiskWarnings(t Token) []string {
 	return alerts
 }
 
-func multiScanMarket(ctx context.Context, heldKeys []string) ([]Token, []string, scanStats, error) {
+// resolveTrackedCandidate rebuilds a durable scanner reference for an open
+// paper position or watched token. The entry pool wins over every fallback:
+// using a newer auxiliary pool for the same token would make marks and exits
+// refer to a different market than the simulated entry.
+func resolveTrackedCandidate(raw multiCandidate, cached Token, cacheOK bool, discovered multiCandidate, discoveredOK bool) multiCandidate {
+	c := multiCandidate{
+		Chain:        normalizeChain(raw.Chain),
+		TokenAddress: strings.ToLower(raw.TokenAddress),
+		PoolAddress:  strings.ToLower(raw.PoolAddress),
+		Factory:      raw.Factory,
+		BlockNumber:  raw.BlockNumber,
+		SeenAt:       raw.SeenAt,
+	}
+	if c.PoolAddress == "" && cacheOK {
+		c.PoolAddress = strings.ToLower(cached.PoolAddress)
+		if c.BlockNumber == 0 {
+			c.BlockNumber = cached.BlockNumber
+		}
+	}
+	if discoveredOK {
+		if c.PoolAddress == "" {
+			c.PoolAddress = discovered.PoolAddress
+		}
+		if c.BlockNumber == 0 {
+			c.BlockNumber = discovered.BlockNumber
+		}
+		if c.Factory == "" {
+			c.Factory = discovered.Factory
+		}
+		if c.SeenAt.IsZero() {
+			c.SeenAt = discovered.SeenAt
+		}
+	}
+	if c.Factory == "" {
+		c.Factory = "持仓/监控跟踪"
+	}
+	if c.SeenAt.IsZero() {
+		c.SeenAt = time.Now()
+	}
+	return c
+}
+
+func multiScanMarket(ctx context.Context, heldRefs []multiCandidate) ([]Token, []string, scanStats, error) {
 	started := time.Now()
 	all, logs, latest, newFound, active, err := discoverAllModules(ctx)
 	stats := scanStats{CandidatePool: len(all), NewFound: newFound, ActiveChains: active}
@@ -922,6 +989,11 @@ func multiScanMarket(ctx context.Context, heldKeys []string) ([]Token, []string,
 	}
 	batch := chooseMultiBatch(all, 15)
 	byKey := map[string]multiCandidate{}
+	discoveredByKey := map[string]multiCandidate{}
+	for _, c := range all {
+		discoveredByKey[tokenIdentity(c.Chain, c.TokenAddress)] = c
+	}
+	cache := loadMultiMarketCache()
 	groups := map[string][]string{}
 	for _, c := range batch {
 		k := tokenIdentity(c.Chain, c.TokenAddress)
@@ -930,31 +1002,45 @@ func multiScanMarket(ctx context.Context, heldKeys []string) ([]Token, []string,
 			groups[c.Chain] = append(groups[c.Chain], strings.ToLower(c.TokenAddress))
 		}
 	}
-	for _, raw := range heldKeys {
-		parts := strings.SplitN(raw, "|", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		chain, address := normalizeChain(parts[0]), strings.ToLower(parts[1])
+	for _, raw := range heldRefs {
+		chain, address := normalizeChain(raw.Chain), strings.ToLower(raw.TokenAddress)
 		if !validAddress(address) {
 			continue
 		}
 		k := tokenIdentity(chain, address)
-		if _, ok := byKey[k]; !ok {
-			byKey[k] = multiCandidate{Chain: chain, TokenAddress: address, Factory: "模拟持仓跟踪", SeenAt: time.Now()}
-			groups[chain] = append(groups[chain], address)
+		if current, ok := byKey[k]; ok {
+			// A held position is tied to its entry pool. Prefer that durable pool
+			// reference over a newly-discovered auxiliary pool for the same token.
+			if raw.PoolAddress != "" {
+				current.PoolAddress = strings.ToLower(raw.PoolAddress)
+			}
+			byKey[k] = current
+			continue
 		}
+		cached, cacheOK := cache[k]
+		discovered, discoveredOK := discoveredByKey[k]
+		c := resolveTrackedCandidate(raw, cached, cacheOK, discovered, discoveredOK)
+		byKey[k] = c
+		groups[chain] = append(groups[chain], address)
 	}
 	stats.BatchAnalyzed = len(byKey)
 	logs = append(logs, fmt.Sprintf("公平轮询：每链最多分析 15 个，本轮合计 %d 个", stats.BatchAnalyzed))
-	universe := map[string]multiCandidate{}
-	for _, c := range all {
-		universe[tokenIdentity(c.Chain, c.TokenAddress)] = c
-	}
+	universe := discoveredByKey
 	for k, c := range byKey {
+		if discovered, ok := universe[k]; ok {
+			if c.PoolAddress == "" {
+				c.PoolAddress = discovered.PoolAddress
+			}
+			if c.BlockNumber == 0 {
+				c.BlockNumber = discovered.BlockNumber
+			}
+			if c.Factory == "" {
+				c.Factory = discovered.Factory
+			}
+		}
 		universe[k] = c
+		byKey[k] = c
 	}
-	cache := loadMultiMarketCache()
 	for k := range cache {
 		if _, ok := universe[k]; !ok {
 			delete(cache, k)
@@ -966,9 +1052,18 @@ func multiScanMarket(ctx context.Context, heldKeys []string) ([]Token, []string,
 		} else {
 			old.Chain = c.Chain
 			old.ChainID = chainIDFor(c.Chain)
-			old.Source = chainLabel(c.Chain) + " · " + c.Factory
-			old.PoolAddress = c.PoolAddress
-			old.BlockNumber = c.BlockNumber
+			if c.Factory != "" && (c.Factory != "模拟持仓跟踪" || old.Source == "") {
+				old.Source = chainLabel(c.Chain) + " · " + c.Factory
+			}
+			// A transient tracking reference must never erase the exact pool that
+			// an open paper position was entered through.
+			if c.PoolAddress != "" {
+				old.PoolAddress = c.PoolAddress
+				old.DEXURL = dexURLFor(c.Chain, c.PoolAddress)
+			}
+			if c.BlockNumber != 0 {
+				old.BlockNumber = c.BlockNumber
+			}
 			cache[k] = old
 		}
 	}

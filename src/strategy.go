@@ -42,7 +42,7 @@ func (s *SimState) automatedOutcomes() []simPositionOutcome {
 	}
 	byID := map[int64]simPositionOutcome{}
 	for _, tr := range s.Trades {
-		if !tr.Automated || tr.Exploratory || open[tr.PositionID] {
+		if !tr.Automated || tr.Exploratory || !tr.ValidationEligible || open[tr.PositionID] {
 			continue
 		}
 		o := byID[tr.PositionID]

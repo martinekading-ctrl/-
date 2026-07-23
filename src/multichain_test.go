@@ -83,7 +83,17 @@ func strictTestSecurity() map[string]any {
 	return map[string]any{
 		"is_open_source": "1", "is_honeypot": "0", "cannot_sell_all": "0", "is_blacklisted": "0",
 		"owner_change_balance": "0", "selfdestruct": "0", "is_proxy": "0", "is_mintable": "0",
+		"hidden_owner": "0", "transfer_pausable": "0", "slippage_modifiable": "0", "personal_slippage_modifiable": "0",
+		"trading_cooldown": "0", "anti_whale_modifiable": "0", "external_call": "0",
 		"owner_percent": "0.01", "creator_percent": "0.01", "holder_count": "120",
+		"holders": []any{
+			map[string]any{"percent": "0.08", "is_locked": "0", "tag": ""},
+			map[string]any{"percent": "0.12", "is_locked": "0", "tag": ""},
+		},
+		"lp_holders": []any{
+			map[string]any{"percent": "0.85", "is_locked": "1", "tag": "Locker"},
+			map[string]any{"percent": "0.15", "is_locked": "0", "tag": ""},
+		},
 	}
 }
 
@@ -110,7 +120,7 @@ func TestStrictMarketFirstQualification(t *testing.T) {
 	pool := "0x2222222222222222222222222222222222222222"
 	pair := strictTestPair(token, pool, time.Now().Add(-5*time.Minute).UnixMilli())
 	q := assessExactPool(multiCandidate{TokenAddress: token, PoolAddress: pool}, []dexPair{pair})
-	tok := Token{Price: 1, Liquidity: pair.Liquidity.USD, Security: "已验证", TaxKnown: true, BuyTaxPct: 1, SellTaxPct: 1}
+	tok := Token{Price: 1, Liquidity: pair.Liquidity.USD, Security: "已验证", TaxKnown: true, BuyTaxPct: 1, SellTaxPct: 1, LPLockKnown: true, LPLockPct: 0.85}
 	if ok, reason := strictMarketFirstQualification(q, tok, strictTestSecurity(), true); !ok {
 		t.Fatalf("safe first-market candidate rejected: %s", reason)
 	}
@@ -119,6 +129,55 @@ func TestStrictMarketFirstQualification(t *testing.T) {
 	q = assessExactPool(multiCandidate{TokenAddress: token, PoolAddress: pool}, []dexPair{pair})
 	if ok, _ := strictMarketFirstQualification(q, tok, strictTestSecurity(), true); ok {
 		t.Fatal("candidate with insufficient early buying passed")
+	}
+}
+
+func TestStrictMarketFirstQualificationRejectsUnsafeConcentrationAndLiquidityOwnership(t *testing.T) {
+	token := "0x1111111111111111111111111111111111111111"
+	pool := "0x2222222222222222222222222222222222222222"
+	pair := strictTestPair(token, pool, time.Now().Add(-5*time.Minute).UnixMilli())
+	q := assessExactPool(multiCandidate{TokenAddress: token, PoolAddress: pool}, []dexPair{pair})
+	tok := Token{Price: 1, Liquidity: pair.Liquidity.USD, Security: "已验证", TaxKnown: true, BuyTaxPct: 1, SellTaxPct: 1, LPLockKnown: true, LPLockPct: 0.85}
+
+	concentrated := strictTestSecurity()
+	concentrated["holders"] = []any{map[string]any{"percent": "0.16", "is_locked": "0", "tag": ""}}
+	if ok, _ := strictMarketFirstQualification(q, tok, concentrated, true); ok {
+		t.Fatal("a 16% unlocked top holder must never pass the automatic strict funnel")
+	}
+
+	unlockedLP := strictTestSecurity()
+	tok.LPLockPct = 0.79
+	if ok, _ := strictMarketFirstQualification(q, tok, unlockedLP, true); ok {
+		t.Fatal("liquidity below the strict 80% lock threshold must not pass")
+	}
+
+	missingField := strictTestSecurity()
+	delete(missingField, "slippage_modifiable")
+	tok.LPLockPct = 0.85
+	if ok, _ := strictMarketFirstQualification(q, tok, missingField, true); ok {
+		t.Fatal("missing security data must fail closed for automatic strict entries")
+	}
+}
+
+func TestResolveTrackedCandidatePreservesEntryPool(t *testing.T) {
+	entryPool := "0x2222222222222222222222222222222222222222"
+	newerPool := "0x3333333333333333333333333333333333333333"
+	resolved := resolveTrackedCandidate(
+		multiCandidate{Chain: "base", TokenAddress: "0x1111111111111111111111111111111111111111", PoolAddress: entryPool, Factory: "模拟持仓跟踪"},
+		Token{PoolAddress: "0x4444444444444444444444444444444444444444", BlockNumber: 99}, true,
+		multiCandidate{Chain: "base", TokenAddress: "0x1111111111111111111111111111111111111111", PoolAddress: newerPool, Factory: "Other", BlockNumber: 100}, true,
+	)
+	if resolved.PoolAddress != entryPool {
+		t.Fatalf("entry pool was overwritten: got %s want %s", resolved.PoolAddress, entryPool)
+	}
+
+	fromCache := resolveTrackedCandidate(
+		multiCandidate{Chain: "base", TokenAddress: "0x1111111111111111111111111111111111111111"},
+		Token{PoolAddress: entryPool, BlockNumber: 99}, true,
+		multiCandidate{Chain: "base", TokenAddress: "0x1111111111111111111111111111111111111111", PoolAddress: newerPool}, true,
+	)
+	if fromCache.PoolAddress != entryPool {
+		t.Fatalf("cached entry pool was overwritten: got %s want %s", fromCache.PoolAddress, entryPool)
 	}
 }
 
