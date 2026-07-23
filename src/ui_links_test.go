@@ -8,7 +8,13 @@ func TestExplorerTokenURLByChain(t *testing.T) {
 		want  string
 	}{
 		{"base", "https://basescan.org/token/0xabc"},
+		{"ethereum", "https://etherscan.io/token/0xabc"},
+		{"eth", "https://etherscan.io/token/0xabc"},
 		{"bsc", "https://bscscan.com/token/0xabc"},
+		{"optimism", "https://optimistic.etherscan.io/token/0xabc"},
+		{"op", "https://optimistic.etherscan.io/token/0xabc"},
+		{"polygon", "https://polygonscan.com/token/0xabc"},
+		{"matic", "https://polygonscan.com/token/0xabc"},
 		{"arbitrum", "https://arbiscan.io/token/0xabc"},
 		{"arb", "https://arbiscan.io/token/0xabc"},
 	}
@@ -37,7 +43,13 @@ func TestChineseTokenURLByChain(t *testing.T) {
 		want  string
 	}{
 		{"base", "https://www.oklink.com/zh-hans/base/token/0xabc"},
+		{"ethereum", "https://www.oklink.com/zh-hans/eth/token/0xabc"},
+		{"eth", "https://www.oklink.com/zh-hans/eth/token/0xabc"},
 		{"bsc", "https://www.oklink.com/zh-hans/bsc/token/0xabc"},
+		{"optimism", "https://www.oklink.com/zh-hans/optimism/token/0xabc"},
+		{"op", "https://www.oklink.com/zh-hans/optimism/token/0xabc"},
+		{"polygon", "https://www.oklink.com/zh-hans/polygon/token/0xabc"},
+		{"matic", "https://www.oklink.com/zh-hans/polygon/token/0xabc"},
 		{"arbitrum", "https://www.oklink.com/zh-hans/arbitrum-one/token/0xabc"},
 		{"arb", "https://www.oklink.com/zh-hans/arbitrum-one/token/0xabc"},
 	}

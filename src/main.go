@@ -1206,7 +1206,7 @@ func drawRadarUI(dc HDC, l layout) {
 	ellipse(dc, logo, col.cyan, col.cyan)
 	text(dc, "B", logo, fnts.button, rgb(3, 35, 38), DT_CENTER|DT_VCENTER|DT_SINGLELINE)
 	text(dc, "Multi-Chain Token Radar", rect(s(76), l.header.Top+s(10), s(500), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
-	text(dc, "Base + BSC + Arbitrum 新池发现 · 免费监控 · 本地模拟交易", rect(s(77), l.header.Top+s(48), s(560), s(22)), fnts.subtitle, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+	text(dc, "6 条 EVM 链新池发现 · 免费监控 · 本地模拟交易", rect(s(77), l.header.Top+s(48), s(560), s(22)), fnts.subtitle, col.muted, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	drawButton(dc, idPageRadar, l.buttons[idPageRadar], "代币雷达", true, app.page == 0)
 	drawButton(dc, idPageSim, l.buttons[idPageSim], "模拟盘", true, app.page == 1)
 	statusFill := col.panel2
@@ -1253,7 +1253,7 @@ func drawRadarUI(dc HDC, l layout) {
 	// Cards
 	vals := []string{strconv.Itoa(len(app.results)), verifiedCount(), watchCount(), strconv.Itoa(app.candidatePool)}
 	labels := []string{"当前列表", "安全已验证", "自选关注", "多链候选库"}
-	subs := []string{"每条数据标记来源和时间", "第三方结果仍需人工复核", "持续快照与异常告警", "三链最多保留 240 个"}
+	subs := []string{"每条数据标记来源和时间", "第三方结果仍需人工复核", "持续快照与异常告警", fmt.Sprintf("%d 链最多保留 %d 个", len(chainModules), len(chainModules)*80)}
 	accents := []uint32{col.blue, col.cyan, col.green, col.yellow}
 	for i, r := range l.cards {
 		roundRect(dc, r, col.panel, col.border, s(9))
@@ -1282,11 +1282,11 @@ func drawRadarUI(dc HDC, l layout) {
 	}
 	chainText := app.chainSummary
 	if chainText == "" {
-		chainText = "等待三链区块状态"
+		chainText = fmt.Sprintf("等待 %d 条链区块状态", len(chainModules))
 	}
 	bannerText := fmt.Sprintf("%s · 上次成功 %s · 本轮分析 %d 个 · 耗时 %s · 下轮 %s", chainText, lastOK, app.lastBatchAnalyzed, dur, next)
 	if app.scanning {
-		bannerText = fmt.Sprintf("正在并行扫描 Base / BSC / Arbitrum · 已保留 %d 个多链候选", app.candidatePool)
+		bannerText = fmt.Sprintf("正在并行扫描 ETH / Base / BSC / OP / Polygon / Arbitrum · 已保留 %d 个多链候选", app.candidatePool)
 	}
 	if app.statusKind == 3 {
 		bf = col.redBg
@@ -1631,7 +1631,7 @@ func drawModal(dc HDC, l layout) {
 	if app.modal == 1 {
 		text(dc, "程序说明", rect(r.Left+s(30), r.Top+s(24), width(r)-s(100), s(42)), fnts.title, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 		body := "怎么使用\n" +
-			"1. 程序默认每 5 秒增量检查 Base、BSC、Arbitrum 新区块；也可以点‘立即扫描’手动刷新。\n" +
+			"1. 程序默认每 5 秒增量检查 ETH、Base、BSC、Optimism、Polygon、Arbitrum 新区块；也可以点‘立即扫描’手动刷新。\n" +
 			"2. 每个候选最右侧都有‘原始走势’和‘中文资料’链接；详情页优先打开简体中文代币资料，展开后仍可打开原始走势和区块浏览器。\n" +
 			"3. 切换到‘模拟盘’，查看持仓、净盈亏、止损止盈和交易记录。\n" +
 			"4. 在候选列表内滚动可逐行浏览代币；在右侧或空白处滚动可下拉整个页面；点击‘展开’查看完整详情。\n" +
@@ -1639,7 +1639,7 @@ func drawModal(dc HDC, l layout) {
 			"四种策略档位\n" +
 			"保守：80分、5万美元流动性、观察3分钟；标准：70分、2.5万美元、观察2分钟；测试：55分、1万美元、观察1分钟；探索：15分、5千美元、观察约30秒、每笔最多1 USDC。探索与影子样本只用于研究，不代表更安全或更赚钱。严重合约风险在任何档位都禁止开仓。\n\n" +
 			"评分与模拟的区别\n" +
-			"质量分只是研究优先级，不是买入信号。模拟盘会估算 DEX 手续费、Gas、税费和滑点，但无法完全复现实盘的 MEV、报价延迟和无法卖出。\n\n" +
+			"质量分只是研究优先级，不是买入信号。模拟盘会估算 DEX 手续费、按链区分的 Gas、税费和滑点，但无法完全复现实盘的 MEV、报价延迟和无法卖出。ETH 的成本按较高下限保守估算，1 USDC 探索样本成本不足时只进入影子研究。\n\n" +
 			"退出规则\n" +
 			"初始 100 USDC，动态仓位最高 5 USDC，最多 3 个持仓；亏损 8% 止损，盈利 12% 卖一半，盈利 20% 清仓，从最高点回撤 8% 退出。连续亏损 3 笔暂停 3 小时。\n\n" +
 			"盈利验证\n" +
@@ -1772,7 +1772,7 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		loadSimState()
 		loadPreferences()
 		app.monitor = loadMonitorState()
-		addLog("V2.12 已启动：中文资料入口、原始走势链接和中文完整详情已就绪")
+		addLog("V2.13 已启动：已扩展至 ETH、Base、BSC、Optimism、Polygon、Arbitrum 六条 EVM 链")
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
 		return 0
@@ -2301,7 +2301,7 @@ func startScan(manual bool) {
 	case <-scanOutcomeCh:
 	default:
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	app.scanCancel = cancel
 	app.scanning = true
 	app.scanSeq++
@@ -2314,7 +2314,7 @@ func startScan(manual bool) {
 	}
 	app.statusKind = 2
 	if manual {
-		addLog("开始手动扫描；最长等待 55 秒，超时会自动停止并保留旧结果")
+		addLog("开始手动扫描；6 链模式最长等待 90 秒，超时会自动停止并保留旧结果")
 	}
 	invalidate(false)
 	held := []string{}
@@ -2361,12 +2361,15 @@ func finishScan() {
 	app.activeChains = out.stats.ActiveChains
 	app.candidatePool = out.stats.CandidatePool
 	app.lastBatchAnalyzed = out.stats.BatchAnalyzed
-	quietHeartbeat := false
+	quietHeartbeat := out.stats.ActiveChains == len(chainModules)
 	logCompletion := out.manual
-	for _, l := range out.logs {
-		if strings.Contains(l, "本轮新发现 0 条") {
-			quietHeartbeat = true
-			break
+	if quietHeartbeat {
+		quietHeartbeat = false
+		for _, l := range out.logs {
+			if strings.Contains(l, "本轮新发现 0 条") {
+				quietHeartbeat = true
+				break
+			}
 		}
 	}
 	if quietHeartbeat && app.autoRefresh && !out.manual && time.Since(app.lastHeartbeatLog) < time.Minute {
@@ -2384,7 +2387,7 @@ func finishScan() {
 		if errors.Is(out.err, context.DeadlineExceeded) {
 			app.status = "扫描超时，已自动停止"
 			app.statusKind = 2
-			addLog("扫描超过 55 秒，已自动停止并保留现有结果")
+			addLog("扫描超过 90 秒，已自动停止并保留现有结果")
 		} else if errors.Is(out.err, context.Canceled) {
 			app.status = "扫描已停止"
 			app.statusKind = 2
@@ -2417,7 +2420,7 @@ func finishScan() {
 		l := buildLayout()
 		clampListPage(l)
 		selectFirstVisible(l)
-		app.status = fmt.Sprintf("多链监控正常 %d/3 · 列表 %d / 候选库 %d", app.activeChains, len(app.results), app.candidatePool)
+		app.status = fmt.Sprintf("多链监控正常 %d/%d · 列表 %d / 候选库 %d", app.activeChains, len(chainModules), len(app.results), app.candidatePool)
 		app.statusKind = 1
 		if app.monitor != nil {
 			for _, alert := range app.monitor.Observe(app.results, app.lastScan) {
@@ -2454,7 +2457,7 @@ func startDiagnostic() {
 	app.status = "正在进行连接诊断"
 	app.statusKind = 2
 	app.modal = 2
-	app.diagText = "正在测试 三条链 RPC、DEX Screener 与 GoPlus，请稍候……"
+	app.diagText = fmt.Sprintf("正在测试 %d 条链 RPC、DEX Screener 与 GoPlus，请稍候……", len(chainModules))
 	invalidate(false)
 	go func() {
 		diagOutcomeCh <- diagnoseMultiChain()
@@ -2482,6 +2485,17 @@ var directTransport = &http.Transport{
 }
 
 var directHTTPClient = &http.Client{Timeout: 9 * time.Second, Transport: directTransport}
+var bypassProxyTransport = &http.Transport{
+	Proxy:                 nil,
+	DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+	MaxIdleConns:          12,
+	MaxIdleConnsPerHost:   3,
+	MaxConnsPerHost:       3,
+	IdleConnTimeout:       30 * time.Second,
+	TLSHandshakeTimeout:   6 * time.Second,
+	ResponseHeaderTimeout: 7 * time.Second,
+}
+var bypassProxyHTTPClient = &http.Client{Timeout: 9 * time.Second, Transport: bypassProxyTransport}
 var winHTTPSession HINTERNET
 var winHTTPOnce sync.Once
 var winHTTPSessionErr error
@@ -2518,6 +2532,7 @@ func initWinHTTPSession() (HINTERNET, error) {
 
 func closeNetwork() {
 	directTransport.CloseIdleConnections()
+	bypassProxyTransport.CloseIdleConnections()
 	if winHTTPSession != 0 {
 		pWinHttpCloseHandle.Call(uintptr(winHTTPSession))
 		winHTTPSession = 0
@@ -2924,6 +2939,14 @@ func winHTTPPostJSON(ctx context.Context, raw string, body []byte) (httpResult, 
 }
 
 func directHTTPPostJSON(ctx context.Context, raw string, body []byte) (httpResult, error) {
+	return httpPostJSON(ctx, raw, body, directHTTPClient, "Go 直连/环境代理")
+}
+
+func bypassProxyHTTPPostJSON(ctx context.Context, raw string, body []byte) (httpResult, error) {
+	return httpPostJSON(ctx, raw, body, bypassProxyHTTPClient, "Go 强制直连备援")
+}
+
+func httpPostJSON(ctx context.Context, raw string, body []byte, client *http.Client, engine string) (httpResult, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", raw, bytes.NewReader(body))
 	if err != nil {
 		return httpResult{}, err
@@ -2932,7 +2955,7 @@ func directHTTPPostJSON(ctx context.Context, raw string, body []byte) (httpResul
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Set("User-Agent", "MultiChainTokenRadar/2.5")
-	resp, err := directHTTPClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return httpResult{}, err
 	}
@@ -2941,22 +2964,41 @@ func directHTTPPostJSON(ctx context.Context, raw string, body []byte) (httpResul
 	if err != nil {
 		return httpResult{}, err
 	}
-	return httpResult{Status: resp.StatusCode, Body: b, Engine: "Go 直连/环境代理"}, nil
+	return httpResult{Status: resp.StatusCode, Body: b, Engine: engine}, nil
 }
 
 func fetchJSONPost(ctx context.Context, raw string, body []byte) (httpResult, error) {
 	wr, werr := winHTTPPostJSON(ctx, raw, body)
-	if werr == nil {
+	if werr == nil && !retryDirectAfterProxyStatus(wr.Status) {
 		return wr, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return httpResult{}, err
 	}
 	dr, derr := directHTTPPostJSON(ctx, raw, body)
+	if derr == nil && !retryDirectAfterProxyStatus(dr.Status) {
+		return dr, nil
+	}
+	br, berr := bypassProxyHTTPPostJSON(ctx, raw, body)
+	if berr == nil {
+		return br, nil
+	}
 	if derr == nil {
 		return dr, nil
 	}
+	if werr == nil {
+		// Preserve the proxy response if the direct retry cannot connect; it has
+		// the most useful HTTP status for the diagnostics panel.
+		return wr, nil
+	}
 	return httpResult{}, fmt.Errorf("Windows 自动代理失败：%v；直连也失败：%v", werr, derr)
+}
+
+// Some desktop proxies allow JSON-RPC heads but reject or rate-limit the
+// heavier eth_getLogs request. Retry those transient policy statuses with the
+// direct transport before declaring a chain unavailable.
+func retryDirectAfterProxyStatus(status int) bool {
+	return status == http.StatusForbidden || status == http.StatusTooManyRequests || status >= 500
 }
 
 func rpcCallEndpoint(ctx context.Context, endpoint, method string, params any, out any) (string, error) {
@@ -4392,7 +4434,7 @@ func addLog(s string) {
 	if len(app.logs) > 100 {
 		app.logs = app.logs[len(app.logs)-100:]
 	}
-	logPath := filepath.Join(dataDir(), "runtime_v212.log")
+	logPath := filepath.Join(dataDir(), "runtime_v213.log")
 	rotateRuntimeLog(logPath)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
@@ -4439,10 +4481,10 @@ func dataFreshness(t time.Time) string {
 }
 func statusBarText() string {
 	if app.scanning {
-		return "扫描中：Base 链与补充接口最长等待 55 秒；可随时点击“停止扫描”。"
+		return "扫描中：6 条链与补充接口最长等待 90 秒；可随时点击“停止扫描”。"
 	}
 	if app.statusKind == 3 {
-		return "Base链或补充接口暂不可用，已保留上次结果；请使用连接诊断。"
+		return "部分链或补充接口暂不可用，已保留上次结果；请使用连接诊断。"
 	}
 	return "就绪 · 5秒实时监控；模拟盘不连接钱包、不发送真实交易。"
 }
@@ -4589,8 +4631,14 @@ func selectedDEXURL(t Token) string {
 func chineseTokenURL(chain, address string) string {
 	chainPath := "base"
 	switch normalizeChain(chain) {
+	case "ethereum":
+		chainPath = "eth"
 	case "bsc":
 		chainPath = "bsc"
+	case "optimism":
+		chainPath = "optimism"
+	case "polygon":
+		chainPath = "polygon"
 	case "arbitrum":
 		chainPath = "arbitrum-one"
 	}
@@ -4598,10 +4646,16 @@ func chineseTokenURL(chain, address string) string {
 }
 
 func explorerTokenURL(chain, address string) string {
-	base := "https://basescan.org/token/"
+	base := "https://etherscan.io/token/"
 	switch normalizeChain(chain) {
+	case "base":
+		base = "https://basescan.org/token/"
 	case "bsc":
 		base = "https://bscscan.com/token/"
+	case "optimism":
+		base = "https://optimistic.etherscan.io/token/"
+	case "polygon":
+		base = "https://polygonscan.com/token/"
 	case "arbitrum":
 		base = "https://arbiscan.io/token/"
 	}
@@ -4633,8 +4687,8 @@ func main() {
 	// Per-monitor v2 DPI awareness. -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
-	className := utf16Ptr("MultiChainTokenRadarV212Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.12 · 中文资料与原始走势")
+	className := utf16Ptr("MultiChainTokenRadarV213Window")
+	title := utf16Ptr("Multi-Chain Token Radar V2.13 · 六链扫描与链成本模拟")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {

@@ -1,6 +1,7 @@
-# Multi-Chain Token Radar V2.12
+# Multi-Chain Token Radar V2.13
 
-V2.12 is a Windows x64 research application for Base, BSC, and Arbitrum. Its
+V2.13 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
+Polygon, and Arbitrum. Its
 current workflow is:
 
 1. discover recently created DEX pools;
@@ -13,6 +14,24 @@ current workflow is:
 The application does not connect to a wallet, store private keys, sign orders,
 or submit real transactions. A profitable paper result is not a promise of
 future or live-trading profit.
+
+## V2.13 six-chain EVM coverage and chain-aware paper costs
+
+- Added direct new-pool discovery for **Ethereum**, **Optimism**, and
+  **Polygon PoS**, bringing the monitored universe to six EVM chains.
+- Ethereum uses Uniswap V2/V3, Optimism uses Uniswap V3, and Polygon uses
+  QuickSwap V2 plus Uniswap V3. Each module has two or more RPC endpoints, known
+  quote assets, DEX Screener enrichment, and GoPlus token-security checks.
+- The scanner now gives each chain an independent candidate budget and can
+  retain up to 80 recent candidates per chain (480 total).
+- New-pool logs are read from a small confirmed-block window, so a public RPC
+  that has reported a head before its log index is ready cannot silently skip a
+  pool. BSC uses a 10-block 1RPC window that stays within its public limit.
+- If a chain's new-pool log scan is incomplete, the UI reports that chain as
+  degraded instead of claiming an all-chain healthy heartbeat.
+- Paper trading now uses conservative minimum gas estimates by chain. A 1-USDC
+  exploration sample that cannot cover Ethereum costs becomes a shadow
+  research sample instead of a misleading simulated fill.
 
 ## V2.12 Chinese token research entry point
 
