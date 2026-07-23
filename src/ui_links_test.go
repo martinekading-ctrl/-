@@ -31,6 +31,23 @@ func TestSelectedDEXURLPrefersSpecificMarketLink(t *testing.T) {
 	}
 }
 
+func TestChineseTokenURLByChain(t *testing.T) {
+	tests := []struct {
+		chain string
+		want  string
+	}{
+		{"base", "https://www.oklink.com/zh-hans/base/token/0xabc"},
+		{"bsc", "https://www.oklink.com/zh-hans/bsc/token/0xabc"},
+		{"arbitrum", "https://www.oklink.com/zh-hans/arbitrum-one/token/0xabc"},
+		{"arb", "https://www.oklink.com/zh-hans/arbitrum-one/token/0xabc"},
+	}
+	for _, tt := range tests {
+		if got := chineseTokenURL(tt.chain, "0xabc"); got != tt.want {
+			t.Fatalf("chain %s: got %q want %q", tt.chain, got, tt.want)
+		}
+	}
+}
+
 func TestPageScrollClampsToVirtualPage(t *testing.T) {
 	oldDPI, oldScale, oldScroll := app.dpi, app.uiScale, app.pageScroll
 	defer func() {
