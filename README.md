@@ -1,5 +1,7 @@
 # Multi-Chain Token Radar V2.20
 
+> 上线、数据和安全边界请先阅读 [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)。本项目当前只做研究与本地模拟，不连接钱包或发送真实交易。
+
 V2.20 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
 Polygon, and Arbitrum. Its
 current workflow is:
