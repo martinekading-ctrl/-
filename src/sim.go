@@ -346,8 +346,15 @@ func normalizeChain(c string) string {
 	if c == "" {
 		return "base"
 	}
-	if c == "arb" {
+	switch c {
+	case "arb":
 		return "arbitrum"
+	case "eth", "mainnet":
+		return "ethereum"
+	case "op":
+		return "optimism"
+	case "matic", "pol":
+		return "polygon"
 	}
 	return c
 }
@@ -470,6 +477,30 @@ func (s *SimState) hasPositionOn(chain, address string) bool {
 }
 func (s *SimState) hasPosition(address string) bool { return s.hasPositionOn("base", address) }
 
+// paperGasUSDC applies a conservative minimum for chains whose execution costs
+// are materially above Base.  It intentionally makes a 1-USDC exploration
+// sample on Ethereum fail rather than reporting a fictitious low-cost trade.
+func (s *SimState) paperGasUSDC(chain string) float64 {
+	gas := s.Config.GasUSDC
+	if gas <= 0 {
+		gas = DefaultSimConfig().GasUSDC
+	}
+	switch normalizeChain(chain) {
+	case "ethereum":
+		return math.Max(gas, 1.25)
+	case "arbitrum":
+		return math.Max(gas, 0.10)
+	case "optimism":
+		return math.Max(gas, 0.04)
+	case "polygon":
+		return math.Max(gas, 0.03)
+	case "bsc":
+		return math.Max(gas, 0.02)
+	default:
+		return gas
+	}
+}
+
 func (s *SimState) Buy(q SimQuote, amount float64, reason string, now time.Time) (SimPosition, error) {
 	s.Normalize()
 	q.Chain = normalizeChain(q.Chain)
@@ -501,7 +532,7 @@ func (s *SimState) Buy(q SimQuote, amount float64, reason string, now time.Time)
 
 	slip := s.slippagePct(amount, q.Liquidity)
 	fee := amount * s.Config.DexFeePct / 100
-	spendable := amount - fee - s.Config.GasUSDC
+	spendable := amount - fee - s.paperGasUSDC(q.Chain)
 	if spendable <= 0 {
 		return SimPosition{}, errors.New("仓位金额不足以覆盖模拟成本")
 	}
@@ -538,8 +569,9 @@ func (s *SimState) liquidationValue(p SimPosition, price, liquidity float64) (ne
 	tax := math.Max(p.SellTaxPct, 0)
 	afterImpact := notional * math.Max(0, 1-(slip+tax)/100)
 	dexFee := afterImpact * s.Config.DexFeePct / 100
-	fees = notional - afterImpact + dexFee + s.Config.GasUSDC
-	net = afterImpact - dexFee - s.Config.GasUSDC
+	gas := s.paperGasUSDC(p.Chain)
+	fees = notional - afterImpact + dexFee + gas
+	net = afterImpact - dexFee - gas
 	if net < 0 {
 		net = 0
 	}
@@ -1067,7 +1099,11 @@ func (s *SimState) AutoEvaluate(quotes []SimQuote, now time.Time) []string {
 		}
 		p, err := s.Buy(q, amount, "自动策略："+reason, now)
 		if err != nil {
-			stats.Rejections["模拟成交失败："+shortErr(err)]++
+			failure := "模拟成交失败：" + shortErr(err)
+			stats.Rejections[failure]++
+			if s.startShadow(q, failure, now) {
+				stats.ShadowStarted++
+			}
 			continue
 		}
 		s.LastAutoEntry[simKey(q.Chain, q.Address)] = now

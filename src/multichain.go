@@ -31,15 +31,34 @@ type chainModule struct {
 	KnownAssets     map[string]bool
 	InitialLookback uint64
 	ChunkSize       uint64
+	Confirmations   uint64
 }
 
 const (
-	pancakeV2BSC = "0xca143ce32fe78f1f7019d7d551a6402fc5350c73"
-	pancakeV2EVM = "0x02a84c1b3bbd7401a5f7fa98a384ebc70bb5749e"
-	pancakeV3EVM = "0x0bfbcf9fa4f9c56b0f40a671ad40e0805a091865"
+	pancakeV2BSC       = "0xca143ce32fe78f1f7019d7d551a6402fc5350c73"
+	pancakeV2EVM       = "0x02a84c1b3bbd7401a5f7fa98a384ebc70bb5749e"
+	pancakeV3EVM       = "0x0bfbcf9fa4f9c56b0f40a671ad40e0805a091865"
+	uniswapV2Ethereum  = "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f"
+	uniswapV3Canonical = "0x1f98431c8ad98523631ae4a59f267346ea31f984"
+	quickSwapV2Polygon = "0x5757371414417b8c6caad45baef941abc7d3ab32"
 )
 
 var chainModules = []chainModule{
+	{
+		Key: "ethereum", Name: "Ethereum", Short: "ETH", ChainID: "1", DexSlug: "ethereum", EnvRPC: "ETHEREUM_RPC_URL",
+		RPCs: []string{"https://ethereum-rpc.publicnode.com", "https://1rpc.io/eth"},
+		Factories: []factorySpec{
+			{Name: "Uniswap V2", Address: uniswapV2Ethereum, Topic: topicUniswapV2PairCreated, Kind: "v2"},
+			{Name: "Uniswap V3", Address: uniswapV3Canonical, Topic: topicUniswapV3PoolCreated, Kind: "v3"},
+		},
+		KnownAssets: map[string]bool{
+			"0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": true,
+			"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": true,
+			"0xdac17f958d2ee523a2206206994597c13d831ec7": true,
+			"0x6b175474e89094c44da98b954eedeac495271d0f": true,
+			"0x2260fac5e5542a773aa44fbcfedf7c193bc2c599": true,
+		}, InitialLookback: 120, ChunkSize: 40, Confirmations: 6,
+	},
 	{
 		Key: "base", Name: "Base", Short: "BASE", ChainID: "8453", DexSlug: "base", EnvRPC: "BASE_RPC_URL",
 		RPCs: []string{"https://mainnet.base.org", "https://mainnet-preconf.base.org"},
@@ -57,13 +76,14 @@ var chainModules = []chainModule{
 			"0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf": true,
 			"0x50c5725949a6f0c72e6c4a641f24049a917db0cb": true,
 			"0x940181a94a35a4569e4529a3cdfb74e38fd98631": true,
-		}, InitialLookback: 1800, ChunkSize: 500,
+		}, InitialLookback: 1800, ChunkSize: 500, Confirmations: 4,
 	},
 	{
 		Key: "bsc", Name: "BNB Smart Chain", Short: "BSC", ChainID: "56", DexSlug: "bsc", EnvRPC: "BSC_RPC_URL",
-		// BNB Chain's no-key dataseed endpoints disable eth_getLogs.  PublicNode
-		// and SubQuery are therefore tried first; users can override with BSC_RPC_URL.
-		RPCs: []string{"https://bsc-rpc.publicnode.com", "https://bnb.rpc.subquery.network/public"},
+		// 1RPC accepts no-key BSC logs in small ranges. Keep its 10-block limit
+		// below the module chunk size so public endpoints remain usable on a
+		// desktop proxy; users can still override with BSC_RPC_URL.
+		RPCs: []string{"https://1rpc.io/bnb", "https://bsc-rpc.publicnode.com", "https://bnb.rpc.subquery.network/public"},
 		Factories: []factorySpec{
 			{Name: "Pancake V2", Address: pancakeV2BSC, Topic: topicUniswapV2PairCreated, Kind: "v2"},
 			{Name: "Pancake V3", Address: pancakeV3EVM, Topic: topicUniswapV3PoolCreated, Kind: "v3"},
@@ -75,7 +95,36 @@ var chainModules = []chainModule{
 			"0xc5f0f7b66764f6ec8c8dff7ba683102295e16409": true,
 			"0x2170ed0880ac9a755fd29b2688956bd959f933f8": true,
 			"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82": true,
-		}, InitialLookback: 1500, ChunkSize: 250,
+		}, InitialLookback: 60, ChunkSize: 10, Confirmations: 6,
+	},
+	{
+		Key: "optimism", Name: "Optimism", Short: "OP", ChainID: "10", DexSlug: "optimism", EnvRPC: "OPTIMISM_RPC_URL",
+		RPCs: []string{"https://optimism-rpc.publicnode.com", "https://mainnet.optimism.io"},
+		Factories: []factorySpec{
+			{Name: "Uniswap V3", Address: uniswapV3Canonical, Topic: topicUniswapV3PoolCreated, Kind: "v3"},
+		},
+		KnownAssets: map[string]bool{
+			"0x4200000000000000000000000000000000000006": true,
+			"0x0b2c639c533813f4aa9d7837caf62653d097ff85": true,
+			"0x94b008aa00579c1307b0ef2c499ad98a8ce58e58": true,
+			"0xda10009cbd5d07dd0cecc66161fc93d7c9000da1": true,
+			"0x4200000000000000000000000000000000000042": true,
+		}, InitialLookback: 600, ChunkSize: 100, Confirmations: 8,
+	},
+	{
+		Key: "polygon", Name: "Polygon PoS", Short: "POL", ChainID: "137", DexSlug: "polygon", EnvRPC: "POLYGON_RPC_URL",
+		RPCs: []string{"https://polygon-bor-rpc.publicnode.com", "https://polygon.drpc.org"},
+		Factories: []factorySpec{
+			{Name: "QuickSwap V2", Address: quickSwapV2Polygon, Topic: topicUniswapV2PairCreated, Kind: "v2"},
+			{Name: "Uniswap V3", Address: uniswapV3Canonical, Topic: topicUniswapV3PoolCreated, Kind: "v3"},
+		},
+		KnownAssets: map[string]bool{
+			"0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270": true,
+			"0x3c499c542cef5e3811e1192ce70d8cc03d5c3359": true,
+			"0x2791bca1f2de4661ed88a30c99a7a9449aa84174": true,
+			"0x7ceb23fd6bc0add59e62ac25578270cff1b9f619": true,
+			"0x8f3cf7ad23cd3cadbd9735aff958023239c6a063": true,
+		}, InitialLookback: 300, ChunkSize: 100, Confirmations: 8,
 	},
 	{
 		Key: "arbitrum", Name: "Arbitrum One", Short: "ARB", ChainID: "42161", DexSlug: "arbitrum", EnvRPC: "ARBITRUM_RPC_URL",
@@ -91,7 +140,7 @@ var chainModules = []chainModule{
 			"0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9": true,
 			"0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f": true,
 			"0x912ce59144191c1204e64559fe8253a0e49e6548": true,
-		}, InitialLookback: 2400, ChunkSize: 400,
+		}, InitialLookback: 2400, ChunkSize: 400, Confirmations: 6,
 	},
 }
 
@@ -303,28 +352,49 @@ func discoverModule(ctx context.Context, m chainModule, last uint64) moduleDisco
 	if err != nil || latest == 0 {
 		return moduleDiscoverResult{Module: m, LastBlock: last, Err: fmt.Errorf("%s RPC 返回无效区块", m.Short)}
 	}
-	logs := []string{fmt.Sprintf("%s RPC：区块 %d，%s，%s", m.Short, latest, engine, ep)}
+	confirmed := confirmedBlock(latest, m.Confirmations)
+	if confirmed == 0 {
+		return moduleDiscoverResult{Module: m, LastBlock: last, Err: fmt.Errorf("%s RPC 区块确认不足", m.Short)}
+	}
+	logs := []string{fmt.Sprintf("%s RPC：区块 %d，确认扫描至 %d，%s，%s", m.Short, latest, confirmed, engine, ep)}
 	from := last + 1
-	if last == 0 || (from <= latest && latest-from > m.InitialLookback*2) {
-		if latest > m.InitialLookback {
-			from = latest - m.InitialLookback
+	if last == 0 || (from <= confirmed && confirmed-from > m.InitialLookback*2) {
+		if confirmed > m.InitialLookback {
+			from = confirmed - m.InitialLookback
 		} else {
 			from = 0
 		}
 	}
-	if from > latest {
-		return moduleDiscoverResult{Module: m, Logs: logs, Latest: latest, LastBlock: last}
+	if from > confirmed {
+		return moduleDiscoverResult{Module: m, Logs: logs, Latest: confirmed, LastBlock: last}
 	}
-	found, more, completed, complete := scanModuleRange(ctx, m, from, latest)
+	found, more, completed, complete := scanModuleRange(ctx, m, from, confirmed)
 	logs = append(logs, more...)
 	newLast := last
 	if complete {
-		newLast = latest
+		newLast = confirmed
 	} else if completed >= from {
 		newLast = completed
 	}
 	logs = append(logs, fmt.Sprintf("%s：新发现 %d 条，游标 %d", m.Short, len(found), newLast))
-	return moduleDiscoverResult{Module: m, Candidates: found, Logs: logs, Latest: latest, NewFound: len(found), LastBlock: newLast}
+	if !complete {
+		return moduleDiscoverResult{
+			Module: m, Candidates: found, Logs: logs, Latest: confirmed,
+			NewFound: len(found), LastBlock: newLast,
+			Err: fmt.Errorf("%s 新池日志扫描未完成", m.Short),
+		}
+	}
+	return moduleDiscoverResult{Module: m, Candidates: found, Logs: logs, Latest: confirmed, NewFound: len(found), LastBlock: newLast}
+}
+
+// confirmedBlock deliberately leaves a small reorg and node-indexing margin.
+// New-pool events are picked up on the next pass instead of being skipped when
+// a public RPC reports a head block before its log index is ready.
+func confirmedBlock(latest, confirmations uint64) uint64 {
+	if latest <= confirmations {
+		return 0
+	}
+	return latest - confirmations
 }
 
 func discoverAllModules(ctx context.Context) ([]multiCandidate, []string, map[string]uint64, int, int, error) {

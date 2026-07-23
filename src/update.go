@@ -21,7 +21,7 @@ import (
 	"unsafe"
 )
 
-const appVersion = "2.12.0"
+const appVersion = "2.13.0"
 
 type updateSettings struct {
 	GitHubRepository string `json:"github_repository"`
