@@ -52,23 +52,24 @@ func DefaultSimConfig() SimConfig {
 }
 
 type SimQuote struct {
-	Chain      string    `json:"chain"`
-	Address    string    `json:"address"`
-	Symbol     string    `json:"symbol"`
-	Name       string    `json:"name"`
-	Price      float64   `json:"price"`
-	Liquidity  float64   `json:"liquidity"`
-	BuyTaxPct  float64   `json:"buy_tax_pct"`
-	SellTaxPct float64   `json:"sell_tax_pct"`
-	TaxKnown   bool      `json:"tax_known"`
-	Score      int       `json:"score"`
-	Security   string    `json:"security"`
-	Buys       int       `json:"buys"`
-	Sells      int       `json:"sells"`
-	Volume24   float64   `json:"volume24"`
-	AgeHours   float64   `json:"age_hours"`
-	Source     string    `json:"source"`
-	Time       time.Time `json:"time"`
+	Chain             string    `json:"chain"`
+	Address           string    `json:"address"`
+	Symbol            string    `json:"symbol"`
+	Name              string    `json:"name"`
+	Price             float64   `json:"price"`
+	Liquidity         float64   `json:"liquidity"`
+	BuyTaxPct         float64   `json:"buy_tax_pct"`
+	SellTaxPct        float64   `json:"sell_tax_pct"`
+	TaxKnown          bool      `json:"tax_known"`
+	Score             int       `json:"score"`
+	Security          string    `json:"security"`
+	PotentialEligible bool      `json:"potential_eligible"`
+	Buys              int       `json:"buys"`
+	Sells             int       `json:"sells"`
+	Volume24          float64   `json:"volume24"`
+	AgeHours          float64   `json:"age_hours"`
+	Source            string    `json:"source"`
+	Time              time.Time `json:"time"`
 }
 
 type PriceSnapshot struct {
@@ -780,6 +781,9 @@ func (s *SimState) dailyRealized(now time.Time) float64 {
 
 func (s *SimState) autoEligible(q SimQuote, now time.Time) (bool, string) {
 	r := s.rules()
+	if !q.PotentialEligible {
+		return false, "未通过严格市场首发资格"
+	}
 	if !q.Time.IsZero() && now.Sub(q.Time) > 90*time.Second {
 		return false, "行情数据已过期"
 	}
@@ -925,7 +929,7 @@ func (d EntryDiagnostics) TopReasons(limit int) string {
 }
 
 func (s *SimState) startShadow(q SimQuote, rejection string, now time.Time) bool {
-	if q.Price <= 0 || q.Liquidity < 5000 || q.Score < 10 || q.Score <= 0 || q.Security == "严重风险" {
+	if !q.PotentialEligible || q.Price <= 0 || q.Liquidity < 5000 || q.Score < 10 || q.Score <= 0 || q.Security == "严重风险" {
 		return false
 	}
 	if !q.Time.IsZero() && now.Sub(q.Time) > 90*time.Second {

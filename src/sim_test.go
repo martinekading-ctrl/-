@@ -6,7 +6,7 @@ import (
 )
 
 func testQuote(price float64) SimQuote {
-	return SimQuote{Address: "0x1111111111111111111111111111111111111111", Symbol: "TST", Name: "Test", Price: price, Liquidity: 100000, Score: 90, Security: "已验证", Buys: 200, Sells: 100, Time: time.Now()}
+	return SimQuote{Address: "0x1111111111111111111111111111111111111111", Symbol: "TST", Name: "Test", Price: price, Liquidity: 100000, Score: 90, Security: "已验证", PotentialEligible: true, Buys: 200, Sells: 100, Time: time.Now()}
 }
 
 func TestBuyAndManualSellIncludeCosts(t *testing.T) {
@@ -76,6 +76,16 @@ func TestDailyLossLimitBlocksAutoEntry(t *testing.T) {
 	events := s.AutoEvaluate([]SimQuote{testQuote(1)}, now)
 	if len(events) == 0 || len(s.Positions) != 0 {
 		t.Fatal("daily loss limit not enforced")
+	}
+}
+
+func TestAutoStrategyRequiresStrictMarketFirstEligibility(t *testing.T) {
+	s := NewSimState()
+	s.AutoEnabled = true
+	q := testQuote(1)
+	q.PotentialEligible = false
+	if events := s.AutoEvaluate([]SimQuote{q}, time.Now()); len(events) != 0 || len(s.Positions) != 0 {
+		t.Fatalf("unqualified market candidate must never open a paper position: %v", events)
 	}
 }
 

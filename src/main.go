@@ -274,6 +274,8 @@ type Token struct {
 	SellTaxPct        float64   `json:"sell_tax_pct"`
 	TaxKnown          bool      `json:"tax_known"`
 	Security          string    `json:"security"`
+	PotentialEligible bool      `json:"potential_eligible"`
+	PotentialStage    string    `json:"potential_stage"`
 	Evidence          []string  `json:"evidence"`
 	DEXURL            string    `json:"dex_url"`
 	Source            string    `json:"source"`
@@ -315,6 +317,10 @@ type appState struct {
 	searchFocused     bool
 	candidatePool     int
 	lastBatchAnalyzed int
+	strictQualified   int
+	strictAwaiting    int
+	strictRejected    int
+	strictRejectNotes string
 	lastScanDuration  time.Duration
 	lastSuccess       time.Time
 	page              int // 0 radar, 1 paper trading
@@ -1252,8 +1258,8 @@ func drawRadarUI(dc HDC, l layout) {
 	text(dc, "5秒实时监控", rect(sw.Right+s(10), ar.Top, ar.Right-sw.Right-s(18), height(ar)), fnts.small, col.text, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 	// Cards
 	vals := []string{strconv.Itoa(len(app.results)), verifiedCount(), watchCount(), strconv.Itoa(app.candidatePool)}
-	labels := []string{"当前列表", "安全已验证", "自选关注", "多链候选库"}
-	subs := []string{"每条数据标记来源和时间", "第三方结果仍需人工复核", "持续快照与异常告警", fmt.Sprintf("%d 链最多保留 %d 个", len(chainModules), len(chainModules)*80)}
+	labels := []string{"严格雷达", "安全已验证", "自选关注", "多链候选库"}
+	subs := []string{"仅展示精确新池与安全门槛均通过的标的", "第三方结果仍需人工复核", "持续快照与异常告警", fmt.Sprintf("%d 链最多保留 %d 个", len(chainModules), len(chainModules)*80)}
 	accents := []uint32{col.blue, col.cyan, col.green, col.yellow}
 	for i, r := range l.cards {
 		roundRect(dc, r, col.panel, col.border, s(9))
@@ -1772,7 +1778,7 @@ func wndProc(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		loadSimState()
 		loadPreferences()
 		app.monitor = loadMonitorState()
-		addLog("V2.13 已启动：已扩展至 ETH、Base、BSC、Optimism、Polygon、Arbitrum 六条 EVM 链")
+		addLog("V2.14 已启动：严格市场首发雷达已启用；仅展示通过精确池、安全与早期交易门槛的模拟研究候选")
 		addLog("Windows 网络设置：" + windowsProxySummary())
 		startUpdateCheck(false)
 		return 0
@@ -2361,6 +2367,10 @@ func finishScan() {
 	app.activeChains = out.stats.ActiveChains
 	app.candidatePool = out.stats.CandidatePool
 	app.lastBatchAnalyzed = out.stats.BatchAnalyzed
+	app.strictQualified = out.stats.Qualified
+	app.strictAwaiting = out.stats.Awaiting
+	app.strictRejected = out.stats.Rejected
+	app.strictRejectNotes = out.stats.RejectSummary
 	quietHeartbeat := out.stats.ActiveChains == len(chainModules)
 	logCompletion := out.manual
 	if quietHeartbeat {
@@ -2420,7 +2430,7 @@ func finishScan() {
 		l := buildLayout()
 		clampListPage(l)
 		selectFirstVisible(l)
-		app.status = fmt.Sprintf("多链监控正常 %d/%d · 列表 %d / 候选库 %d", app.activeChains, len(chainModules), len(app.results), app.candidatePool)
+		app.status = fmt.Sprintf("多链监控正常 %d/%d · 严格通过 %d / 等待索引 %d / 淘汰 %d", app.activeChains, len(chainModules), app.strictQualified, app.strictAwaiting, app.strictRejected)
 		app.statusKind = 1
 		if app.monitor != nil {
 			for _, alert := range app.monitor.Observe(app.results, app.lastScan) {
@@ -3357,6 +3367,8 @@ type dexPair struct {
 		H24 float64 `json:"h24"`
 	} `json:"priceChange"`
 	Txns struct {
+		M5  struct{ Buys, Sells int } `json:"m5"`
+		H1  struct{ Buys, Sells int } `json:"h1"`
 		H24 struct{ Buys, Sells int } `json:"h24"`
 	} `json:"txns"`
 	Info struct {
@@ -3374,6 +3386,10 @@ type scanStats struct {
 	CandidatePool int
 	BatchAnalyzed int
 	NewFound      int
+	Qualified     int
+	Awaiting      int
+	Rejected      int
+	RejectSummary string
 	Duration      time.Duration
 }
 
@@ -4158,7 +4174,7 @@ func tokensToQuotes(tokens []Token, now time.Time) []SimQuote {
 		if quoteTime.IsZero() {
 			quoteTime = now
 		}
-		out = append(out, SimQuote{Chain: t.Chain, Address: t.Address, Symbol: t.Symbol, Name: t.Name, Price: t.Price, Liquidity: t.Liquidity, BuyTaxPct: t.BuyTaxPct, SellTaxPct: t.SellTaxPct, TaxKnown: t.TaxKnown, Score: t.Score, Security: t.Security, Buys: t.Buys24, Sells: t.Sells24, Volume24: t.Volume24, AgeHours: t.AgeHours, Source: t.Source, Time: quoteTime})
+		out = append(out, SimQuote{Chain: t.Chain, Address: t.Address, Symbol: t.Symbol, Name: t.Name, Price: t.Price, Liquidity: t.Liquidity, BuyTaxPct: t.BuyTaxPct, SellTaxPct: t.SellTaxPct, TaxKnown: t.TaxKnown, Score: t.Score, Security: t.Security, PotentialEligible: t.PotentialEligible, Buys: t.Buys24, Sells: t.Sells24, Volume24: t.Volume24, AgeHours: t.AgeHours, Source: t.Source, Time: quoteTime})
 	}
 	return out
 }
@@ -4168,7 +4184,7 @@ func canManualSimBuy() bool {
 		return false
 	}
 	t := app.results[app.selected]
-	return t.Price > 0 && t.Liquidity > 0 && t.Security != "严重风险" && !strings.Contains(t.Source, "演示") && !app.sim.hasPositionOn(t.Chain, t.Address) && len(app.sim.Positions) < app.sim.Config.MaxPositions && app.sim.Cash >= app.sim.Config.PositionSize
+	return t.PotentialEligible && t.Price > 0 && t.Liquidity > 0 && t.Security != "严重风险" && !strings.Contains(t.Source, "演示") && !app.sim.hasPositionOn(t.Chain, t.Address) && len(app.sim.Positions) < app.sim.Config.MaxPositions && app.sim.Cash >= app.sim.Config.PositionSize
 }
 
 func selectedPositionValid() bool {
@@ -4434,7 +4450,7 @@ func addLog(s string) {
 	if len(app.logs) > 100 {
 		app.logs = app.logs[len(app.logs)-100:]
 	}
-	logPath := filepath.Join(dataDir(), "runtime_v213.log")
+	logPath := filepath.Join(dataDir(), "runtime_v214.log")
 	rotateRuntimeLog(logPath)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
@@ -4687,8 +4703,8 @@ func main() {
 	// Per-monitor v2 DPI awareness. -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3))
 	hInst, _, _ := pGetModuleHandleW.Call(0)
-	className := utf16Ptr("MultiChainTokenRadarV213Window")
-	title := utf16Ptr("Multi-Chain Token Radar V2.13 · 六链扫描与链成本模拟")
+	className := utf16Ptr("MultiChainTokenRadarV214Window")
+	title := utf16Ptr("Multi-Chain Token Radar V2.14 · 严格市场首发研究与模拟")
 	cur, _, _ := pLoadCursorW.Call(0, IDC_ARROW)
 	wc := WNDCLASSEX{CbSize: uint32(unsafe.Sizeof(WNDCLASSEX{})), Style: 0x0008, LpfnWndProc: syscall.NewCallback(wndProc), HInstance: HINSTANCE(hInst), HCursor: HCURSOR(cur), HbrBackground: 0, LpszClassName: className}
 	if r, _, e := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {

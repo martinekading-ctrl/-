@@ -1,6 +1,6 @@
-# Multi-Chain Token Radar V2.13
+# Multi-Chain Token Radar V2.14
 
-V2.13 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
+V2.14 is a Windows x64 research application for Ethereum, Base, BSC, Optimism,
 Polygon, and Arbitrum. Its
 current workflow is:
 
@@ -14,6 +14,35 @@ current workflow is:
 The application does not connect to a wallet, store private keys, sign orders,
 or submit real transactions. A profitable paper result is not a promise of
 future or live-trading profit.
+
+## V2.14 strict market-first research queue
+
+The radar no longer treats every newly-created DEX pool as a new token. Its
+visible list and paper-automation input are now restricted to candidates that
+pass every public-data gate below:
+
+1. a supported DEX factory emits a pool event with one known quote asset;
+2. DexScreener indexes the **exact emitted pool address** and supplies a USD
+   price plus its creation time; the application never substitutes a larger
+   historical pool for the emitted pool;
+3. the exact pool is no older than 60 minutes and the same token has no
+   earlier indexed DEX market pool;
+4. exact-pool liquidity is at least 10,000 USD, with at least four 1-hour buy
+   transactions and no more sells than buys;
+5. GoPlus returns a complete safe result: source is open, no honeypot,
+   blacklist, cannot-sell, balance-change, self-destruct, proxy, or minting
+   flag; buy/sell tax is known and at most 5%; creator/owner share is at most
+   20%; and at least 20 holders are reported.
+
+Candidates waiting for indexing or failing any one gate are retained only in
+the local re-check cache; they do not appear in the radar and cannot start a
+paper trade or shadow sample. The no-earlier-pool check is a **market-first
+proxy**, not proof of a contract's original deployment time. It is designed to
+exclude the practical failure mode where an old token opens a fresh pool.
+
+The 1-hour buy/sell figures are public aggregate transaction counts, not proof
+that each buy came from an independent wallet. The application remains
+paper-only: no wallet, private key, signing, or live order support exists.
 
 ## V2.13 six-chain EVM coverage and chain-aware paper costs
 

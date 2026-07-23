@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -283,10 +284,10 @@ func scanFactoryLogsModule(ctx context.Context, m chainModule, from, to uint64, 
 			add(t1)
 		} else if m.KnownAssets[t1] && !m.KnownAssets[t0] {
 			add(t0)
-		} else {
-			add(t0)
-			add(t1)
 		}
+		// Unknown/unknown pools are intentionally not candidates. They have no
+		// trustworthy price leg and are a common way for an old token to create a
+		// fresh auxiliary pool that looks like a launch event.
 	}
 	return out, nil
 }
@@ -653,7 +654,12 @@ func fetchSecurityForChain(ctx context.Context, m chainModule, addresses []strin
 func topMultiDisplay(cache map[string]Token, limit int) []Token {
 	rows := make([]Token, 0, len(cache))
 	for _, t := range cache {
-		rows = append(rows, t)
+		// The radar surface is deliberately a strict research queue, not a dump
+		// of every newly-created pool. Rejected/awaiting candidates stay in the
+		// local cache for re-evaluation but cannot reach paper trading.
+		if t.PotentialEligible {
+			rows = append(rows, t)
+		}
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].Score == rows[j].Score {
@@ -703,6 +709,140 @@ func topMultiDisplay(cache map[string]Token, limit int) []Token {
 		return chosen[i].Score > chosen[j].Score
 	})
 	return chosen
+}
+
+const (
+	strictMarketFirstWindow = time.Hour
+	strictMinLiquidity      = 10_000.0
+	strictMinH1Buys         = 4
+	strictMinHolders        = 20
+	strictMaxAdminPct       = 0.20
+)
+
+// exactPoolAssessment keeps the scanner honest about which DEX pool it is
+// scoring.  A token endpoint can return every historical pool for a token;
+// choosing the largest one is precisely what made an old token look new.
+type exactPoolAssessment struct {
+	Pair                dexPair
+	Exact               bool
+	HasOlderIndexedPool bool
+	Reason              string
+}
+
+func pairContainsToken(p dexPair, token string) bool {
+	token = strings.ToLower(token)
+	return strings.EqualFold(p.BaseToken.Address, token) || strings.EqualFold(p.QuoteToken.Address, token)
+}
+
+func assessExactPool(c multiCandidate, pairs []dexPair) exactPoolAssessment {
+	q := exactPoolAssessment{}
+	for _, p := range pairs {
+		if !strings.EqualFold(p.PairAddress, c.PoolAddress) {
+			continue
+		}
+		if !pairContainsToken(p, c.TokenAddress) {
+			continue
+		}
+		if !strings.EqualFold(p.BaseToken.Address, c.TokenAddress) {
+			q.Reason = "精确新池未提供该代币的美元报价"
+			continue
+		}
+		q.Pair, q.Exact = p, true
+		break
+	}
+	if !q.Exact {
+		if q.Reason == "" {
+			q.Reason = "DEX 尚未索引精确新池"
+		}
+		return q
+	}
+	if q.Pair.PairCreatedAt <= 0 {
+		q.Exact = false
+		q.Reason = "精确新池创建时间尚未索引"
+		return q
+	}
+	// This is a market-age check, not a claim about contract deployment time.
+	// It catches the important case where an old token opens a fresh pool.
+	for _, p := range pairs {
+		if !pairContainsToken(p, c.TokenAddress) || strings.EqualFold(p.PairAddress, c.PoolAddress) || p.PairCreatedAt <= 0 {
+			continue
+		}
+		if p.PairCreatedAt < q.Pair.PairCreatedAt-60_000 {
+			q.HasOlderIndexedPool = true
+			break
+		}
+	}
+	return q
+}
+
+func strictMarketFirstQualification(q exactPoolAssessment, t Token, sec map[string]any, securityOK bool) (bool, string) {
+	if !q.Exact {
+		return false, q.Reason
+	}
+	if q.HasOlderIndexedPool {
+		return false, "发现更早的 DEX 市场记录，排除老币新开辅助池"
+	}
+	age := time.Since(time.UnixMilli(q.Pair.PairCreatedAt))
+	if age < 0 || age > strictMarketFirstWindow {
+		return false, "精确池不在 60 分钟市场首发窗口内"
+	}
+	if t.Price <= 0 || t.Liquidity < strictMinLiquidity {
+		return false, "精确池价格或流动性未达到 10,000 美元"
+	}
+	if q.Pair.Txns.H1.Buys < strictMinH1Buys {
+		return false, "近 1 小时真实买入笔数不足 4 笔"
+	}
+	if q.Pair.Txns.H1.Sells > q.Pair.Txns.H1.Buys {
+		return false, "近 1 小时卖出笔数高于买入笔数"
+	}
+	if !securityOK || t.Security != "已验证" {
+		return false, "安全接口未完整验证"
+	}
+	if !isOne(sec, "is_open_source") {
+		return false, "合约未确认开源"
+	}
+	for _, key := range []string{"is_honeypot", "cannot_sell_all", "is_blacklisted", "owner_change_balance", "selfdestruct", "is_proxy", "is_mintable"} {
+		if isOne(sec, key) {
+			return false, "安全硬门槛未通过：" + key
+		}
+	}
+	if !t.TaxKnown || t.BuyTaxPct > 5 || t.SellTaxPct > 5 {
+		return false, "买卖税未确认或高于 5%"
+	}
+	if ownerPct := math.Max(fnum(val(sec, "owner_percent")), fnum(val(sec, "creator_percent"))); ownerPct > strictMaxAdminPct {
+		return false, "创建者或所有者持仓超过 20%"
+	}
+	if holders := int(fnum(val(sec, "holder_count"))); holders < strictMinHolders {
+		return false, "持币地址少于 20 个"
+	}
+	return true, "通过严格市场首发资格：精确新池、无更早 DEX 记录、安全完整、早期买盘成立"
+}
+
+func topQualificationReasons(reasons map[string]int, limit int) string {
+	type reasonCount struct {
+		reason string
+		count  int
+	}
+	rows := make([]reasonCount, 0, len(reasons))
+	for reason, count := range reasons {
+		if count > 0 {
+			rows = append(rows, reasonCount{reason: reason, count: count})
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].count == rows[j].count {
+			return rows[i].reason < rows[j].reason
+		}
+		return rows[i].count > rows[j].count
+	})
+	if limit <= 0 || limit > len(rows) {
+		limit = len(rows)
+	}
+	parts := make([]string, 0, limit)
+	for _, row := range rows[:limit] {
+		parts = append(parts, fmt.Sprintf("%s %d", row.reason, row.count))
+	}
+	return strings.Join(parts, "；")
 }
 
 func multiScanMarket(ctx context.Context, heldKeys []string) ([]Token, []string, scanStats, error) {
@@ -781,7 +921,7 @@ func multiScanMarket(ctx context.Context, heldKeys []string) ([]Token, []string,
 		return topMultiDisplay(cache, 100), logs, stats, nil
 	}
 
-	best := map[string]dexPair{}
+	marketPairs := map[string][]dexPair{}
 	security := map[string]map[string]any{}
 	securityOK := map[string]bool{}
 	for _, m := range chainModules {
@@ -803,24 +943,11 @@ func multiScanMarket(ctx context.Context, heldKeys []string) ([]Token, []string,
 			for _, p := range pairs {
 				baseAddr := strings.ToLower(p.BaseToken.Address)
 				quoteAddr := strings.ToLower(p.QuoteToken.Address)
-				a := baseAddr
-				if _, wanted := byKey[tokenIdentity(m.Key, a)]; !wanted {
-					if _, quoteWanted := byKey[tokenIdentity(m.Key, quoteAddr)]; !quoteWanted {
-						continue
+				for _, a := range []string{baseAddr, quoteAddr} {
+					k := tokenIdentity(m.Key, a)
+					if _, wanted := byKey[k]; wanted {
+						marketPairs[k] = append(marketPairs[k], p)
 					}
-					// DEX Screener quotes priceUsd for baseToken.  When our candidate is
-					// the quote token, keep the pool metrics but do not attach the other
-					// token's price or project links to it.  This prevents false paper trades.
-					a = quoteAddr
-					p.BaseToken, p.QuoteToken = p.QuoteToken, p.BaseToken
-					p.PriceUSD = ""
-					p.PriceChange.H24 = 0
-					p.Info.Websites = nil
-					p.Info.Socials = nil
-				}
-				k := tokenIdentity(m.Key, a)
-				if old, ok := best[k]; !ok || p.Liquidity.USD > old.Liquidity.USD {
-					best[k] = p
 				}
 			}
 		}
@@ -833,17 +960,19 @@ func multiScanMarket(ctx context.Context, heldKeys []string) ([]Token, []string,
 				security[k] = v
 				securityOK[k] = true
 			}
-			logs = append(logs, fmt.Sprintf("%s：市场命中 %d 个，安全返回 %d 个", m.Short, countBestForChain(best, m.Key), len(sec)))
+			logs = append(logs, fmt.Sprintf("%s：市场候选 %d 个，安全返回 %d 个", m.Short, countMarketPairsForChain(marketPairs, m.Key), len(sec)))
 		}
 	}
 	metaUsed := map[string]int{}
+	rejectionReasons := map[string]int{}
 	for k, c := range byKey {
 		m, okm := chainByKey(c.Chain)
 		if !okm {
 			continue
 		}
 		old := cache[k]
-		p, marketOK := best[k]
+		assessment := assessExactPool(c, marketPairs[k])
+		p, marketOK := assessment.Pair, assessment.Exact
 		metadataChecked := old.MetadataCheckedAt
 		if !marketOK {
 			p.ChainID = m.DexSlug
@@ -903,17 +1032,40 @@ func multiScanMarket(ctx context.Context, heldKeys []string) ([]Token, []string,
 		if !marketOK {
 			t.Evidence = append(t.Evidence, "DEX Screener 尚未索引该池，价格与流动性暂缺")
 		}
+		if !marketOK {
+			stats.Awaiting++
+			t.PotentialEligible = false
+			t.PotentialStage = "等待精确池索引"
+			t.Evidence = append(t.Evidence, assessment.Reason+"；不会进入雷达或模拟交易")
+		} else {
+			ok, reason := strictMarketFirstQualification(assessment, t, security[k], securityOK[k])
+			if ok {
+				stats.Qualified++
+				t.PotentialEligible = true
+				t.PotentialStage = "严格观察"
+				t.Grade = "严格观察"
+				t.Evidence = append([]string{reason, "说明：这是市场首发代理证据，不等同于合约部署时间证明。"}, t.Evidence...)
+			} else {
+				stats.Rejected++
+				rejectionReasons[reason]++
+				t.PotentialEligible = false
+				t.PotentialStage = "淘汰：" + reason
+				t.Evidence = append([]string{"未通过严格市场首发资格：" + reason}, t.Evidence...)
+			}
+		}
 		cache[k] = t
 	}
+	stats.RejectSummary = topQualificationReasons(rejectionReasons, 3)
+	logs = append(logs, fmt.Sprintf("严格市场首发：通过 %d，等待精确池索引 %d，淘汰 %d；主要原因：%s", stats.Qualified, stats.Awaiting, stats.Rejected, stats.RejectSummary))
 	saveMultiMarketCache(cache)
 	stats.Duration = time.Since(started)
 	return topMultiDisplay(cache, 100), logs, stats, nil
 }
 
-func countBestForChain(best map[string]dexPair, chain string) int {
+func countMarketPairsForChain(pairs map[string][]dexPair, chain string) int {
 	n := 0
 	prefix := normalizeChain(chain) + "|"
-	for k := range best {
+	for k := range pairs {
 		if strings.HasPrefix(k, prefix) {
 			n++
 		}
